@@ -1,6 +1,6 @@
 import { sanitizeImageUrl } from '../utils/utils.js';
 
-export function buildDetailModalHTML(cardName, imageUrl, isLorebook, cardCreator, tags, creator, websiteDesc, description, descPreview, personality, scenario, firstMessage, alternateGreetings, exampleMsg, entries, entriesCount, metadata, isBookmarked = false, isRandom = false, isImported = false, characterExistsInST = false, sourceUrlData = null) {
+export function buildDetailModalHTML(cardName, imageUrl, isLorebook, cardCreator, tags, creator, websiteDesc, description, descPreview, personality, scenario, firstMessage, alternateGreetings, exampleMsg, entries, entriesCount, metadata, isBookmarked = false, isRandom = false, isImported = false, characterExistsInST = false, sourceUrlData = null, chubFeatures = null) {
     const safeImageUrl = sanitizeImageUrl(imageUrl);
 
     // Random buttons HTML (only shown when viewing a random card)
@@ -50,6 +50,12 @@ export function buildDetailModalHTML(cardName, imageUrl, isLorebook, cardCreator
                             <i class="fa-${isBookmarked ? 'solid' : 'regular'} fa-bookmark"></i>
                             <span>${isBookmarked ? 'Saved' : 'Save'}</span>
                         </button>
+                        ${chubFeatures?.isChubCard && chubFeatures?.isLoggedIn ? `
+                        <button class="bot-browser-chub-favorite-btn ${chubFeatures.isFavorited ? 'favorited' : ''}" data-char-id="${chubFeatures.charId || ''}">
+                            <i class="fa-${chubFeatures.isFavorited ? 'solid' : 'regular'} fa-heart"></i>
+                            <span>${chubFeatures.isFavorited ? 'Favorited' : 'Favorite'}</span>
+                        </button>
+                        ` : ''}
                         <button class="bot-browser-detail-back">
                             <i class="fa-solid fa-arrow-left"></i> <span>Back</span>
                         </button>
@@ -64,14 +70,14 @@ export function buildDetailModalHTML(cardName, imageUrl, isLorebook, cardCreator
                 </div>
 
                 <div class="bot-browser-detail-info">
-                    ${buildDetailSections(isLorebook, cardCreator, tags, creator, websiteDesc, description, descPreview, personality, scenario, firstMessage, alternateGreetings, exampleMsg, entries, entriesCount, metadata)}
+                    ${buildDetailSections(isLorebook, cardCreator, tags, creator, websiteDesc, description, descPreview, personality, scenario, firstMessage, alternateGreetings, exampleMsg, entries, entriesCount, metadata, chubFeatures)}
                 </div>
             </div>
         </div>
     `;
 }
 
-function buildDetailSections(isLorebook, cardCreator, tags, creator, websiteDesc, description, descPreview, personality, scenario, firstMessage, alternateGreetings, exampleMsg, entries, entriesCount, metadata) {
+function buildDetailSections(isLorebook, cardCreator, tags, creator, websiteDesc, description, descPreview, personality, scenario, firstMessage, alternateGreetings, exampleMsg, entries, entriesCount, metadata, chubFeatures = null) {
     let html = '';
 
     if (isLorebook) {
@@ -139,6 +145,61 @@ function buildDetailSections(isLorebook, cardCreator, tags, creator, websiteDesc
 
     if (isLorebook && entries && Array.isArray(entries) && entries.length > 0) {
         html += buildLorebookEntriesSection(entries, entriesCount);
+    }
+
+    // Gallery section (Chub)
+    if (chubFeatures?.galleryImages?.length > 0) {
+        html += `
+                <div class="bot-browser-detail-section">
+                    <button class="bot-browser-collapse-toggle" data-target="bb-gallery-section">
+                        <i class="fa-solid fa-chevron-right"></i>
+                        <h4>Gallery (${chubFeatures.galleryImages.length})</h4>
+                    </button>
+                    <div class="bot-browser-collapse-content" id="bb-gallery-section" style="display: none;">
+                        <div class="bot-browser-gallery-grid">
+                            ${chubFeatures.galleryImages.map(img => `
+                                <div class="bot-browser-gallery-thumb clickable-image"
+                                     data-image-url="${img.imageUrl}"
+                                     style="background-image: url('${img.imageUrl}');">
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>`;
+    }
+
+    // Follow button (Chub)
+    if (chubFeatures?.isChubCard && chubFeatures?.isLoggedIn && creator) {
+        html += `
+                <div class="bot-browser-detail-section bot-browser-follow-section">
+                    <button class="bot-browser-follow-btn ${chubFeatures.isFollowing ? 'following' : ''}" data-username="${creator}">
+                        <i class="fa-solid fa-${chubFeatures.isFollowing ? 'check' : 'user-plus'}"></i>
+                        <span>${chubFeatures.isFollowing ? 'Following' : 'Follow'} @${creator}</span>
+                    </button>
+                </div>`;
+    }
+
+    // Enhanced Chub stats
+    if (chubFeatures?.stats) {
+        const s = chubFeatures.stats;
+        let statsHTML = '<div class="bot-browser-detail-stats-grid">';
+        if (s.downloads) statsHTML += `<div class="bb-stat"><i class="fa-solid fa-download"></i><span>${s.downloads.toLocaleString()}</span><small>Downloads</small></div>`;
+        if (s.favorites) statsHTML += `<div class="bb-stat"><i class="fa-solid fa-heart"></i><span>${s.favorites.toLocaleString()}</span><small>Favorites</small></div>`;
+        if (s.rating) statsHTML += `<div class="bb-stat"><i class="fa-solid fa-star"></i><span>${s.rating.toFixed(1)}</span><small>Rating (${s.ratingCount || 0})</small></div>`;
+        if (s.tokens) statsHTML += `<div class="bb-stat"><i class="fa-solid fa-coins"></i><span>${s.tokens.toLocaleString()}</span><small>Tokens</small></div>`;
+        if (s.chats) statsHTML += `<div class="bb-stat"><i class="fa-solid fa-comments"></i><span>${s.chats.toLocaleString()}</span><small>Chats</small></div>`;
+        if (s.messages) statsHTML += `<div class="bb-stat"><i class="fa-solid fa-message"></i><span>${s.messages.toLocaleString()}</span><small>Messages</small></div>`;
+        statsHTML += '</div>';
+        html += `
+                <div class="bot-browser-detail-section">
+                    <button class="bot-browser-collapse-toggle" data-target="bb-stats-section">
+                        <i class="fa-solid fa-chevron-down"></i>
+                        <h4>Stats</h4>
+                    </button>
+                    <div class="bot-browser-collapse-content" id="bb-stats-section">
+                        ${statsHTML}
+                    </div>
+                </div>`;
     }
 
     if (metadata) {

@@ -52,7 +52,7 @@ async function fetchBackyardApi(procedure, input) {
 export const BACKYARD_SORT_TYPES = {
     TRENDING: 'Trending',
     POPULAR: 'Popularity',  // API uses 'Popularity' not 'Popular'
-    NEW: 'New',
+    NEW: 'Newest',
     TOP_RATED: 'TopRated'
 };
 
@@ -66,7 +66,7 @@ export async function browseBackyardCharacters(options = {}) {
         tagNames = [],
         sortBy = BACKYARD_SORT_TYPES.TRENDING,
         sortDirection = 'desc',
-        type = 'all', // 'all', 'sfw', 'nsfw'
+        type = 'all', // valid: 'all', 'one-on-one', 'party' (API no longer accepts 'sfw'/'nsfw')
         cursor = null,
         direction = 'forward'
     } = options;
@@ -101,34 +101,31 @@ export async function browseBackyardCharacters(options = {}) {
 export async function searchBackyardCharacters(options = {}) {
     const {
         search = '',
-        tagNames = [],
         sortBy = BACKYARD_SORT_TYPES.POPULAR,
+        cursor = null,
         type = 'all',
-        cursor = null
+        tagNames = [],
     } = options;
 
     // If no search term, use browse endpoint
     if (!search.trim()) {
-        return browseBackyardCharacters({ tagNames, sortBy, type, cursor });
+        return browseBackyardCharacters({ sortBy, cursor, type, tagNames });
     }
 
-    // Search uses the same endpoint but with search parameter
+    // Search uses a dedicated endpoint that supports special syntax like @username and #tag.
     const input = {
-        tagNames,
         sortBy: {
             type: sortBy,
             direction: 'desc'
         },
-        type,
-        direction: 'forward',
-        search: search.trim()
+        query: search.trim(),
     };
 
     if (cursor) {
         input.cursor = cursor;
     }
 
-    const result = await fetchBackyardApi('hub.browse.getHubGroupConfigsForTag', input);
+    const result = await fetchBackyardApi('hub.browse.getHubGroupConfigsBySearch', input);
     return {
         characters: result?.hubGroupConfigs || [],
         nextCursor: result?.nextCursor || null,
@@ -194,6 +191,7 @@ export function transformBackyardCard(char) {
     // Get first character config (main character)
     const config = char.CharacterConfigs?.[0] || {};
     const image = config.Images?.[0];
+    const lorebookItems = Array.isArray(config.LorebookItems) ? config.LorebookItems : [];
 
     // Build avatar URL from Cloudinary
     let avatarUrl = '';
@@ -220,6 +218,7 @@ export function transformBackyardCard(char) {
         desc_preview: char.tagline || '',
         desc_search: (char.tagline || '') + ' ' + (config.persona || '').substring(0, 500),
         created_at: char.createdAt,
+        updated_at: char.updatedAt || config.updatedAt || char.createdAt,
         possibleNsfw: char.isNSFW || config.isNSFW || false,
         service: 'backyard',
         sourceService: 'backyard',
@@ -229,6 +228,7 @@ export function transformBackyardCard(char) {
         downloadCount: char.downloadCount || 0,
         messageCount: char.messageCount || 0,
         scenario: char.Scenario?.name || '',
+        has_lorebook: lorebookItems.length > 0,
         // Store raw data for import
         _rawData: char
     };

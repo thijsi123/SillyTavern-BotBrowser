@@ -48,14 +48,30 @@ export function createCardHTML(card) {
                     </div>
                 ` : ''}
             </div>
+                ${(card.isLiveChub && (card.starCount || card.downloadCount || card.nTokens)) ? `
+                    <div class="bot-browser-card-stats">
+                        ${card.downloadCount ? `<span title="Downloads"><i class="fa-solid fa-download"></i> ${formatCompact(card.downloadCount)}</span>` : ''}
+                        ${card.starCount ? `<span title="Favorites"><i class="fa-solid fa-heart"></i> ${formatCompact(card.starCount)}</span>` : ''}
+                        ${card.nTokens ? `<span title="Tokens"><i class="fa-solid fa-coins"></i> ${formatCompact(card.nTokens)}</span>` : ''}
+                    </div>
+                ` : ''}
+            </div>
+            ${card._isFavorited ? '<div class="bot-browser-card-fav-badge"><i class="fa-solid fa-heart"></i></div>' : ''}
         </div>
     `;
+}
+
+function formatCompact(num) {
+    if (!num) return '0';
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+    return String(num);
 }
 
 export function getOriginalMenuHTML(recentlyViewed) {
     return `
         <div class="bot-browser-header">
-            <h3>Bot Browser <span style="font-size: 0.6em; font-weight: 400; color: rgba(255, 255, 255, 0.6);">v1.1.5</span></h3>
+            <h3>Bot Browser <span style="font-size: 0.6em; font-weight: 400; color: rgba(255, 255, 255, 0.6);">v2.0</span></h3>
             <div class="bot-browser-tabs">
                 <button class="bot-browser-tab active" data-tab="bots">Bots</button>
                 <button class="bot-browser-tab" data-tab="lorebooks">Lorebooks</button>
@@ -121,6 +137,18 @@ export function getOriginalMenuHTML(recentlyViewed) {
                     <div class="bot-browser-source-icon" style="background-image: url('https://avatars.charhub.io/icons/assets/full_logo.png'); background-size: cover; background-position: center; background-repeat: no-repeat; background-color: white;"></div>
                     <span>Chub</span>
                 </button>
+                <button class="bot-browser-source bot-browser-chub-auth-only" data-source="chub_favorites" style="display:none;">
+                    <div class="bot-browser-source-icon" style="background: linear-gradient(135deg, #ff6b6b, #ee5a24); display: flex; align-items: center; justify-content: center; font-size: 22px; color: white;">
+                        <i class="fa-solid fa-heart"></i>
+                    </div>
+                    <span>My Favorites</span>
+                </button>
+                <button class="bot-browser-source bot-browser-chub-auth-only" data-source="chub_timeline" style="display:none;">
+                    <div class="bot-browser-source-icon" style="background: linear-gradient(135deg, #6c5ce7, #a29bfe); display: flex; align-items: center; justify-content: center; font-size: 22px; color: white;">
+                        <i class="fa-solid fa-rss"></i>
+                    </div>
+                    <span>Timeline</span>
+                </button>
                 <button class="bot-browser-source" data-source="jannyai">
                     <div class="bot-browser-source-icon" style="background-image: url('https://tse3.mm.bing.net/th/id/OIP.nb-qi0od9W6zRsskVwL6QAHaHa?rs=1&pid=ImgDetMain&o=7&rm=3'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
                     <span>JannyAI</span>
@@ -149,6 +177,38 @@ export function getOriginalMenuHTML(recentlyViewed) {
                     <div class="bot-browser-source-icon" style="background-image: url('https://files.catbox.moe/216rab.webp'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
                     <span>Risuai Realm</span>
                 </button>
+                <button class="bot-browser-source" data-source="charavault">
+                    <div class="bot-browser-source-icon" style="background-image: url('https://charavault.net/favicon.svg'); background-size: 75%; background-position: center; background-repeat: no-repeat; background-color: #0a0a0f;"></div>
+                    <span>CharaVault</span>
+                </button>
+                <button class="bot-browser-source" data-source="crushon">
+                    <div class="bot-browser-source-icon" style="background-image: url('https://crushon.ai/favicon-64x64.png'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
+                    <span>CrushOn.AI</span>
+                </button>
+                <button class="bot-browser-source bb-crushon-auth-only" data-source="crushon_favorites" style="display:none;">
+                    <div class="bot-browser-source-icon" style="background: linear-gradient(135deg, #ff6b9d, #c44569); display: flex; align-items: center; justify-content: center; font-size: 22px; color: white;">
+                        <i class="fa-solid fa-thumbs-up"></i>
+                    </div>
+                    <span>Crushon Likes</span>
+                </button>
+                <button class="bot-browser-source" data-source="harpy">
+                    <div class="bot-browser-source-icon" style="background-image: url('https://harpy.chat/icons/logo.svg'); background-size: 80%; background-position: center; background-repeat: no-repeat; background-color: #1a1a2e;"></div>
+                    <span>Harpy.chat</span>
+                </button>
+                <button class="bot-browser-source" data-source="sakura">
+                    <div class="bot-browser-source-icon" style="background-image: url('https://sakura.fm/favicon.ico'); background-size: cover; background-position: center; background-repeat: no-repeat; background-color: #1a0a1a;"></div>
+                    <span>Sakura.fm</span>
+                </button>
+                <button class="bot-browser-source bb-sakura-auth-only" data-source="sakura_favorites" style="display:none;">
+                    <div class="bot-browser-source-icon" style="background: linear-gradient(135deg, #3d1a4e, #1a0a2a); display: flex; align-items: center; justify-content: center; font-size: 22px; color: #f0abfc;">
+                        <i class="fa-solid fa-heart"></i>
+                    </div>
+                    <span>Sakura Faves</span>
+                </button>
+                <button class="bot-browser-source" data-source="saucepan">
+                    <div class="bot-browser-source-icon" style="background-image: url('https://saucepan.ai/favicon-32x32.png'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
+                    <span>Saucepan.ai</span>
+                </button>
                 <!-- Archive Sources (sorted by size - largest first) -->
                 <button class="bot-browser-source" data-source="catbox">
                     <div class="bot-browser-source-icon" style="background-image: url('https://catbox.tech/favicon128.png'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
@@ -169,14 +229,6 @@ export function getOriginalMenuHTML(recentlyViewed) {
                 <button class="bot-browser-source" data-source="nyai_me">
                     <div class="bot-browser-source-icon" style="background-image: url('https://nyai.me/img/necologofavicon-64.png'); background-size: 85%; background-position: center; background-repeat: no-repeat;"></div>
                     <span>Nyai.me</span>
-                </button>
-                <button class="bot-browser-source" data-source="quillgen">
-                    <div class="bot-browser-source-icon" style="background: linear-gradient(135deg, #1a1a2e, #16213e); display: flex; align-items: center; justify-content: center;">
-                        <img src="https://quillgen.app/logo-dark.png"
-                             alt="QuillGen"
-                             style="max-width: 100%; max-height: 100%; display: block;">
-                    </div>
-                    <span>QuillGen.app</span>
                 </button>
             </div>
         </div>

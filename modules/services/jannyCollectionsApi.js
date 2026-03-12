@@ -15,15 +15,19 @@ export async function fetchJannyCollections(options = {}) {
         sort = 'popular' // 'popular' or 'new'
     } = options;
 
-    const url = `${JANNY_COLLECTIONS_URL}?sort=${sort}&page=${page}`;
+    const nocache = Date.now();
+    const url = `${JANNY_COLLECTIONS_URL}?sort=${sort}&page=${page}&nocache=${nocache}`;
 
     console.log('[Bot Browser] Fetching JannyAI collections:', url);
 
     const response = await proxiedFetch(url, {
         service: 'jannyai',
         fetchOptions: {
+            cache: 'no-store',
             headers: {
                 'Accept': 'text/html',
+                'Cache-Control': 'no-cache, no-store, max-age=0',
+                'Pragma': 'no-cache',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         }
@@ -140,10 +144,12 @@ function parseCollectionsPage(html, currentPage, sort) {
         });
     }
 
-    console.log(`[Bot Browser] Parsed ${collections.length} collections from page ${currentPage}`);
+    const orderedCollections = sortCollections(collections, sort);
+
+    console.log(`[Bot Browser] Parsed ${orderedCollections.length} collections from page ${currentPage}`);
 
     return {
-        collections,
+        collections: orderedCollections,
         pagination: {
             currentPage,
             totalPages,
@@ -152,6 +158,39 @@ function parseCollectionsPage(html, currentPage, sort) {
         },
         sort
     };
+}
+
+function parseCollectionDate(value) {
+    const text = String(value || '').trim();
+    if (!text) return 0;
+
+    const mmddyyyy = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (mmddyyyy) {
+        const [, month, day, year] = mmddyyyy;
+        const date = new Date(Number(year), Number(month) - 1, Number(day));
+        return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+    }
+
+    const parsed = new Date(text);
+    return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+}
+
+function sortCollections(collections, sort) {
+    const ordered = [...collections];
+
+    if (sort === 'new') {
+        return ordered.sort((a, b) => {
+            const dateDelta = parseCollectionDate(b.lastUpdated) - parseCollectionDate(a.lastUpdated);
+            if (dateDelta !== 0) return dateDelta;
+            return (b.views || 0) - (a.views || 0);
+        });
+    }
+
+    return ordered.sort((a, b) => {
+        const viewDelta = (b.views || 0) - (a.views || 0);
+        if (viewDelta !== 0) return viewDelta;
+        return parseCollectionDate(b.lastUpdated) - parseCollectionDate(a.lastUpdated);
+    });
 }
 
 /**
@@ -229,9 +268,38 @@ function parseCollectionDetailsPage(html, collectionId, slug) {
     // Strip HTML comments from the entire page for cleaner parsing
     const cleanHtml = stripHtmlComments(html);
 
-    // Parse collection name from title or h1
-    const titleMatch = cleanHtml.match(/<title>([^<]+)<\/title>/) || cleanHtml.match(/<h1[^>]*>([^<]+)<\/h1>/);
-    const collectionName = titleMatch ? decodeHtmlEntities(titleMatch[1].replace(' - JannyAI', '').trim()) : 'Collection';
+    // Parse collection name from the visible h1 first; the document title often prefixes "Collection".
+    const h1TextMatch = cleanHtml.match(/<h1[^>]*>\s*([^<]+?)\s*(?:<span|<\/h1>)/i);
+    const h1Match = cleanHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const titleMatch = cleanHtml.match(/<title>([^<]+)<\/title>/i);
+    const rawCollectionName = h1TextMatch
+        ? h1TextMatch[1]
+        : (h1Match
+            ? h1Match[1].replace(/<[^>]*>/g, ' ')
+            : (titleMatch ? titleMatch[1] : ''));
+    const collectionName = decodeHtmlEntities(
+        rawCollectionName
+            .replace(/\s+-\s+JannyAI$/i, '')
+            .replace(/^Collection\s+/i, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+    ) || 'Collection';
+
+    const creatorBlockMatch = cleanHtml.match(/<img[^>]*src="([^"]+)"[^>]*>\s*<span>by<\/span>\s*<a href="\/collectors\/([^"]+)"[^>]*class="hyperlink">([^<]+)<\/a>/i);
+    const creatorMatch = cleanHtml.match(/href="\/collectors\/([^"]+)"[^>]*class="hyperlink">([^<]+)<\/a>/i);
+    const creatorUsername = creatorBlockMatch ? creatorBlockMatch[2] : (creatorMatch ? creatorMatch[1] : '');
+    const creatorName = creatorBlockMatch
+        ? decodeHtmlEntities(creatorBlockMatch[3].trim())
+        : (creatorMatch ? decodeHtmlEntities(creatorMatch[2].trim()) : '');
+    const creatorAvatar = creatorBlockMatch ? creatorBlockMatch[1] : '';
+    const lastUpdatedMatch = cleanHtml.match(/Last updated:\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
+    const lastUpdated = lastUpdatedMatch ? lastUpdatedMatch[1] : '';
+    const descriptionMatch = cleanHtml.match(/<div class="markdown[^"]*">\s*<div><p>([\s\S]*?)<\/p>/i);
+    const description = descriptionMatch
+        ? decodeHtmlEntities(descriptionMatch[1].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim())
+        : '';
+    const characterCountMatch = cleanHtml.match(/Characters\s*\((\d+)\)/i);
+    const characterCount = characterCountMatch ? parseInt(characterCountMatch[1]) : 0;
 
     // Find all character card anchor tags - they contain everything we need
     // Pattern: <a ... href="/characters/{uuid}_{slug}" ...>...card content...</a>
@@ -304,6 +372,14 @@ function parseCollectionDetailsPage(html, collectionId, slug) {
         id: collectionId,
         slug,
         name: collectionName,
+        description,
+        characterCount,
+        lastUpdated,
+        creator: {
+            username: creatorUsername,
+            name: creatorName,
+            avatar: creatorAvatar,
+        },
         characters,
         url: `https://jannyai.com/collections/${collectionId}_${slug}`
     };

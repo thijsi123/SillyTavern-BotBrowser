@@ -45,39 +45,76 @@ const PROXY_CONFIGS = {
  */
 const SERVICE_PROXY_MAP = {
     // JannyAI (Cloudflare) - try corsproxy.io first to avoid Puter noise when it works
-    jannyai: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    jannyai_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    jannyai: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    jannyai_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
 
     // Character Tavern - corsproxy.io first, then Puter, then cors.lol
-    character_tavern: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    character_tavern_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    character_tavern: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    character_tavern_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
 
     // Wyvern - corsproxy.io first, then Puter, then cors.lol
-    wyvern: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    wyvern_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    wyvern: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    wyvern_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
 
     // Chub - avoid direct attempts to prevent noisy CORS console errors; proxies are required for many endpoints.
-    chub: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    chub_gateway: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    chub_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    chub: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    chub_gateway: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    chub_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
 
     // RisuRealm - corsproxy.io first, then Puter, then cors.lol
-    risuai_realm: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    risuai_realm_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    risuai_realm: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    risuai_realm_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
 
     // MLPChag (neocities) - CORS is allowed; do not proxy by default.
     mlpchag: [PROXY_TYPES.NONE],
 
-    // Backyard.ai - corsproxy.io first, then cors.lol, then Puter
-    backyard: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    backyard_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    // /aicg/ live feed (Neocities HTML pages) - direct fetch is blocked from the standalone app.
+    anchorhold_live: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
+
+    // Hosted Character Archive frontend - usually CORS-enabled Flask, so try direct first.
+    character_archive: [PROXY_TYPES.NONE, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
+
+    // Backyard.ai - corsproxy.io first, then Puter, then cors.lol
+    backyard: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    backyard_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
 
     // Pygmalion.chat - direct fetch often fails CORS; use proxies to avoid preflight errors in console.
-    pygmalion: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    pygmalion_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    pygmalion: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    pygmalion_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // CharaVault - Cloudflare protected
+    charavault: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // Sakura.fm
+    sakura: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // Saucepan.ai
+    saucepan: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // CrushOn.ai - Cloudflare + tRPC
+    crushon: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // Harpy.chat - Supabase has CORS headers but custom headers need proxy
+    harpy: [PROXY_TYPES.NONE, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // Botify.ai - Strapi CMS, anonymous OK
+    botify: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // Joyland.ai - POST-based API
+    joyland: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // SpicyChat.ai - Typesense (direct fetch blocked by CORS from browser)
+    spicychat: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+
+    // Talkie AI - MiniMax platform, requires signed headers (custom x-token/x-sign); Puter handles these better
+    talkie: [PROXY_TYPES.PUTER, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL],
+
+    // CAIBotList - HTML pages + HTMX
+    caibotlist: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    caibotlist_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
 
     // Default fallback chain
-    default: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER]
+    default: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL]
 };
 
 const PUTER_CDN_URL = 'https://js.puter.com/v2/';
@@ -108,6 +145,27 @@ function headersToObject(headers) {
     if (Array.isArray(headers)) return Object.fromEntries(headers);
     if (typeof headers === 'object') return { ...headers };
     return {};
+}
+
+function stripSensitiveHeadersForPublicProxy(headers, authHeaderObj) {
+    const input = headersToObject(headers);
+    const authKeys = new Set(Object.keys(authHeaderObj || {}).map(k => k.toLowerCase()));
+    const defaultSensitive = new Set([
+        'authorization',
+        'cookie',
+        'set-cookie',
+        'x-csrf-token',
+        'x-xsrf-token',
+    ]);
+
+    const out = {};
+    for (const [k, v] of Object.entries(input)) {
+        const key = String(k).toLowerCase();
+        if (authKeys.has(key)) continue;
+        if (defaultSensitive.has(key)) continue;
+        out[k] = v;
+    }
+    return out;
 }
 
 function getGlobalAuthHeadersForService(service) {
@@ -281,25 +339,58 @@ export async function proxiedFetch(url, options = {}) {
         proxyChain = null,
         fetchOptions = {},
         timeoutMs = DEFAULT_TIMEOUT_MS,
+        allowPublicAuth = false,
     } = options;
 
-    const proxies = proxyChain || getProxyChainForService(service);
+    const authHeaders = getGlobalAuthHeadersForService(service);
+    const authHeaderObj = authHeaders ? headersToObject(authHeaders) : {};
+    const requestHeaderObj = headersToObject(fetchOptions.headers);
+    const hasAuthHeaders = Object.keys(authHeaderObj).length > 0;
+
+    let proxies = proxyChain || getProxyChainForService(service);
+
+    // If the caller configured auth headers for this service, prefer a proxy that can actually
+    // forward them to the upstream. Public URL-based proxies receive our request headers,
+    // which would leak secrets to the proxy operator and are usually NOT forwarded anyway.
+    if (hasAuthHeaders && !allowPublicAuth) {
+        const preferred = [];
+        if (proxies.includes(PROXY_TYPES.NONE)) preferred.push(PROXY_TYPES.NONE);
+        if (proxies.includes(PROXY_TYPES.PUTER)) preferred.push(PROXY_TYPES.PUTER);
+        const rest = proxies.filter((p) => !preferred.includes(p));
+        proxies = [...preferred, ...rest];
+    }
+
     const errors = [];
 
-    const authHeaders = getGlobalAuthHeadersForService(service);
-    const mergedHeaders = {
-        ...(authHeaders ? headersToObject(authHeaders) : {}),
-        ...headersToObject(fetchOptions.headers),
-    };
-    const finalFetchOptions = Object.keys(mergedHeaders).length > 0
-        ? { ...fetchOptions, headers: mergedHeaders }
+    // Apply auth headers ONLY to direct/Puter fetches. Never send auth headers to public proxies.
+    const directHeaders = hasAuthHeaders
+        ? { ...authHeaderObj, ...requestHeaderObj }
+        : requestHeaderObj;
+    const directFetchOptions = Object.keys(directHeaders).length > 0
+        ? { ...fetchOptions, headers: directHeaders }
+        : fetchOptions;
+
+    // For public proxies, strip sensitive headers (including any configured auth headers).
+    const proxyHeaderObj = hasAuthHeaders && allowPublicAuth
+        ? { ...authHeaderObj, ...requestHeaderObj }
+        : stripSensitiveHeadersForPublicProxy(requestHeaderObj, authHeaderObj);
+    const proxyFetchOptions = Object.keys(proxyHeaderObj).length > 0
+        ? { ...fetchOptions, headers: proxyHeaderObj }
         : fetchOptions;
 
     for (const proxyType of proxies) {
         try {
             let response;
 
-            if (proxyType === PROXY_TYPES.PUTER) {
+            if (proxyType === PROXY_TYPES.NONE) {
+                debugLog(`[CORS Proxy] Trying direct fetch for: ${url}`);
+                const { fetchOptions: timedOptions, cleanup } = withTimeout(directFetchOptions, timeoutMs);
+                try {
+                    response = await fetch(url, timedOptions);
+                } finally {
+                    cleanup();
+                }
+            } else if (proxyType === PROXY_TYPES.PUTER) {
                 if (!isPuterEnabled()) {
                     continue;
                 }
@@ -308,14 +399,14 @@ export async function proxiedFetch(url, options = {}) {
                     continue;
                 }
                 debugLog(`[CORS Proxy] Trying Puter.js fetch for: ${url}`);
-                response = await puterFetch(url, finalFetchOptions);
+                response = await puterFetch(url, directFetchOptions, timeoutMs);
             } else {
                 const proxyUrl = buildProxyUrl(proxyType, url);
                 if (!proxyUrl) {
                     continue;
                 }
                 debugLog(`[CORS Proxy] Trying ${PROXY_CONFIGS[proxyType].name} for: ${url}`);
-                const { fetchOptions: timedOptions, cleanup } = withTimeout(finalFetchOptions, timeoutMs);
+                const { fetchOptions: timedOptions, cleanup } = withTimeout(proxyFetchOptions, timeoutMs);
                 try {
                     response = await fetch(proxyUrl, timedOptions);
                 } finally {
@@ -353,10 +444,19 @@ export async function proxiedFetch(url, options = {}) {
                 continue;
             }
 
-            if (proxyType === PROXY_TYPES.PUTER && response.status === 401) {
-                const error = new Error('Unauthorized (Puter)');
+            // Public proxies (not direct) sometimes return 400 as a transient/internal error
+            // rather than forwarding the upstream's 400. Fall back to try another proxy.
+            if (response.status === 400 && proxyType !== PROXY_TYPES.NONE) {
+                const error = new Error(`Bad request from ${PROXY_CONFIGS[proxyType].name} (400)`);
                 errors.push({ proxy: proxyType, error });
-                debugWarn('[CORS Proxy] Puter returned 401, trying next proxy');
+                debugWarn(`[CORS Proxy] ${PROXY_CONFIGS[proxyType].name} returned 400, trying next proxy`);
+                continue;
+            }
+
+            if (response.status === 401 && proxyType !== PROXY_TYPES.NONE) {
+                const error = new Error(`Unauthorized by ${PROXY_CONFIGS[proxyType].name} (401)`);
+                errors.push({ proxy: proxyType, error });
+                debugWarn(`[CORS Proxy] ${PROXY_CONFIGS[proxyType].name} returned 401, trying next proxy`);
                 continue;
             }
 

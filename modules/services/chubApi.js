@@ -1,4 +1,4 @@
-const CHUB_API_BASE = 'https://api.chub.ai';
+const CHUB_GATEWAY_BASE = 'https://gateway.chub.ai';
 import { proxiedFetch } from './corsProxy.js';
 
 const DEBUG = typeof window !== 'undefined' && window.__BOT_BROWSER_DEBUG === true;
@@ -7,7 +7,7 @@ function getChubAuthHeaders() {
     try {
         if (typeof window === 'undefined') return {};
         const map = window.__BOT_BROWSER_AUTH_HEADERS;
-        const headers = map?.chub;
+        const headers = map?.chub_gateway || map?.chub;
         if (!headers || typeof headers !== 'object') return {};
         return { ...headers };
     } catch {
@@ -15,60 +15,63 @@ function getChubAuthHeaders() {
     }
 }
 
-/**
- * Search Chub cards using the live API (no authentication required)
- * @param {Object} options - Search options
- * @returns {Promise<Object>} Search results with nodes array
- */
-export async function searchChubCards(options = {}) {
+function appendChubSearchParam(params, key, value) {
+    if (value === undefined || value === null || value === '') return;
+    params.append(key, String(value));
+}
+
+function buildChubSearchParams(options = {}) {
     const params = new URLSearchParams({
         search: options.search || '',
-        first: String(options.limit || 200),
+        namespace: options.namespace || 'characters',
+        first: String(options.limit || 48),
         page: String(options.page || 1),
-        sort: options.sort || 'download_count',
+        sort: options.sort || 'default',
         asc: String(options.asc ?? false),
         nsfw: String(options.nsfw ?? true),
         nsfl: String(options.nsfl ?? true),
+        nsfw_only: String(options.nsfwOnly ?? false),
+        include_forks: String(options.includeForks ?? true),
+        exclude_mine: String(options.excludeMine ?? true),
+        chub: String(options.chub ?? true),
+        count: String(options.countOnly ?? false),
     });
 
-    if (options.namespace) {
-        params.append('namespace', options.namespace);
-    }
+    appendChubSearchParam(params, 'topics', options.tags);
+    appendChubSearchParam(params, 'excludetopics', options.excludeTags);
+    appendChubSearchParam(params, 'inclusive_or', options.inclusiveOr);
+    appendChubSearchParam(params, 'username', options.username);
+    appendChubSearchParam(params, 'my_favorites', options.myFavorites);
+    appendChubSearchParam(params, 'min_tokens', options.minTokens);
+    appendChubSearchParam(params, 'max_tokens', options.maxTokens);
+    appendChubSearchParam(params, 'min_ai_rating', options.minAiRating);
+    appendChubSearchParam(params, 'min_tags', options.minTags);
+    appendChubSearchParam(params, 'max_days_ago', options.maxDaysAgo);
+    appendChubSearchParam(params, 'require_example_dialogues', options.requireExamples);
+    appendChubSearchParam(params, 'require_lore', options.requireLore);
+    appendChubSearchParam(params, 'require_lore_embedded', options.requireLoreEmbedded);
+    appendChubSearchParam(params, 'require_lore_linked', options.requireLoreLinked);
+    appendChubSearchParam(params, 'require_alternate_greetings', options.requireGreetings);
+    appendChubSearchParam(params, 'require_custom_prompt', options.requireCustomPrompt);
+    appendChubSearchParam(params, 'require_images', options.requireImages);
+    appendChubSearchParam(params, 'require_expressions', options.requireExpressions);
+    appendChubSearchParam(params, 'recommended_verified', options.recommendedVerified);
 
-    if (options.myFavorites) {
-        params.append('my_favorites', 'true');
-    }
+    return params;
+}
 
-    if (options.specialMode) {
-        params.append('special_mode', String(options.specialMode));
-    }
-
-    // Tag filters
-    if (options.tags) {
-        params.append('tags', options.tags);
-    }
-    if (options.excludeTags) {
-        params.append('exclude_tags', options.excludeTags);
-    }
-
-    // Advanced filters
-    if (options.minTokens) params.append('min_tokens', String(options.minTokens));
-    if (options.maxTokens) params.append('max_tokens', String(options.maxTokens));
-    if (options.username) params.append('username', options.username);
-    if (options.maxDaysAgo) params.append('max_days_ago', String(options.maxDaysAgo));
-    if (options.minAiRating) params.append('min_ai_rating', String(options.minAiRating));
-    if (options.requireExamples) params.append('require_example_dialogues', 'true');
-    if (options.requireLore) params.append('require_lore', 'true');
-    if (options.requireGreetings) params.append('require_alternate_greetings', 'true');
-
-    const response = await proxiedFetch(`${CHUB_API_BASE}/search?${params}`, {
-        service: 'chub',
+async function performChubSearch(options = {}) {
+    const params = buildChubSearchParams(options);
+    const response = await proxiedFetch(`${CHUB_GATEWAY_BASE}/search?${params}`, {
+        service: 'chub_gateway',
         fetchOptions: {
-            method: 'GET',
+            method: 'POST',
             headers: {
                 'Accept': 'application/json',
+                'Content-Type': 'application/json',
                 ...getChubAuthHeaders(),
             },
+            body: '{}',
         },
     });
 
@@ -80,6 +83,18 @@ export async function searchChubCards(options = {}) {
     const data = await response.json();
     if (DEBUG) console.log('[Bot Browser] Chub API response data:', data);
     return data;
+}
+
+/**
+ * Search Chub cards using the live API (no authentication required)
+ * @param {Object} options - Search options
+ * @returns {Promise<Object>} Search results with nodes array
+ */
+export async function searchChubCards(options = {}) {
+    return performChubSearch({
+        ...options,
+        namespace: options.namespace || 'characters',
+    });
 }
 
 /**
@@ -150,8 +165,27 @@ export function transformChubCard(node) {
         downloadCount: node.nChats || 0,
         rating: node.rating || 0,
         ratingCount: node.ratingCount || 0,
-        nTokens: node.nTokens || 0
+        nTokens: node.nTokens || 0,
+        nFavorites: node.starCount || 0,
+        nMessages: node.nMessages || 0,
+        nChats: node.nChats || 0,
+        forksCount: node.forks_count || 0,
+        chubNodeId: node.id || null
     };
+}
+
+function normalizeChubDefinition(definition) {
+    if (!definition) return {};
+    if (typeof definition === 'string') {
+        try {
+            const parsed = JSON.parse(definition);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+            return {};
+        }
+    }
+
+    return typeof definition === 'object' ? definition : {};
 }
 
 /**
@@ -161,9 +195,9 @@ export function transformChubCard(node) {
  */
 export function transformFullChubCharacter(charData) {
     const node = charData.node || charData;
-    const def = node.definition || {};
+    const def = normalizeChubDefinition(node.definition);
 
-    // CHUB FIELD MAPPING (matches Character Library):
+    // CHUB FIELD MAPPING:
     // Chub definition.personality → SillyTavern description (main AI character text)
     // Chub definition.description → SillyTavern creator_notes (website/page description)
     // Chub definition.first_message → SillyTavern first_mes
@@ -173,6 +207,13 @@ export function transformFullChubCharacter(charData) {
 
     // Get related lorebooks (valid ones, excluding -1)
     const relatedLorebooks = (node.related_lorebooks || []).filter(id => id > 0);
+    const firstMessage = def.first_mes || def.first_message || '';
+    const exampleMessages = def.mes_example || def.example_dialogs || '';
+    // Match SillyTavern core's Chub import mapping as closely as possible:
+    // personality -> description, tavern_personality -> personality, description -> creator_notes.
+    const primaryDefinition = def.personality || '';
+    const personality = def.tavern_personality || '';
+    const creatorNotes = def.description || '';
 
     // Character name
     const cardName = def.name || node.name || 'Unknown';
@@ -189,17 +230,15 @@ export function transformFullChubCharacter(charData) {
 
     return {
         name: cardName,
-        // Chub's "personality" field is the main character description for AI
-        description: def.personality || '',
-        // ST personality field is empty (Chub doesn't use it this way)
-        personality: '',
+        description: primaryDefinition,
+        personality: personality,
         scenario: def.scenario || '',
-        first_message: def.first_message || '',
-        first_mes: def.first_message || '',
-        mes_example: def.example_dialogs || '',
-        // Chub's "description" field is actually creator notes / page description
-        creator_notes: def.description || node.description || '',
+        first_message: firstMessage,
+        first_mes: firstMessage,
+        mes_example: exampleMessages,
+        creator_notes: creatorNotes,
         system_prompt: def.system_prompt || '',
+        pre_history_instructions: def.system_prompt || '',
         post_history_instructions: def.post_history_instructions || '',
         alternate_greetings: def.alternate_greetings || [],
         // Include embedded lorebook if present and has entries
@@ -208,8 +247,26 @@ export function transformFullChubCharacter(charData) {
             : undefined,
         // Include related lorebook IDs for fetching if no embedded lorebook
         related_lorebooks: relatedLorebooks.length > 0 ? relatedLorebooks : undefined,
+        website_description: node.description || '',
         tags: node.topics || [],
         creator: node.fullPath?.split('/')[0] || 'Unknown',
+        starCount: node.starCount || 0,
+        favoriteCount: node.starCount || 0,
+        favorite_count: node.starCount || 0,
+        downloadCount: node.nChats || 0,
+        downloads: node.nChats || 0,
+        rating: node.rating || 0,
+        ratingScore: node.rating || 0,
+        ratingCount: node.ratingCount || 0,
+        nTokens: node.nTokens || 0,
+        token_count: node.nTokens || 0,
+        nMessages: node.nMessages || 0,
+        messageCount: node.nMessages || 0,
+        message_count: node.nMessages || 0,
+        nChats: node.nChats || 0,
+        chatCount: node.nChats || 0,
+        chat_count: node.nChats || 0,
+        forksCount: node.forks_count || 0,
         character_version: '',
         // Store tagline for Overview tab display (short website tagline)
         tagline: node.tagline || '',
@@ -230,21 +287,26 @@ export function transformFullChubCharacter(charData) {
  */
 export function convertWorldInfoToCharacterBook(worldInfo, name) {
     const entries = [];
+    const normalizePosition = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        return value || 0;
+    };
 
     // Convert entries object to array
     if (worldInfo.entries && typeof worldInfo.entries === 'object') {
         for (const [key, entry] of Object.entries(worldInfo.entries)) {
+            const secondaryKeys = Array.isArray(entry.keysecondary) ? entry.keysecondary : [];
             entries.push({
                 id: entry.uid || parseInt(key) || entries.length,
                 keys: entry.key || [],
-                secondary_keys: entry.keysecondary || [],
+                secondary_keys: secondaryKeys,
                 comment: entry.comment || entry.name || '',
                 content: entry.content || '',
                 constant: entry.constant || false,
-                selective: entry.selective !== false,
+                selective: entry.selective ?? secondaryKeys.length > 0,
                 insertion_order: entry.order || entry.insertion_order || 100,
                 enabled: entry.enabled !== false,
-                position: entry.position || 'before_char',
+                position: normalizePosition(entry.position),
                 extensions: entry.extensions || {},
                 priority: entry.priority || 10,
                 name: entry.name || '',
@@ -262,62 +324,17 @@ export function convertWorldInfoToCharacterBook(worldInfo, name) {
 
 // ==================== LOREBOOKS API ====================
 
-const CHUB_GATEWAY_BASE = 'https://gateway.chub.ai';
-
 /**
  * Search Chub lorebooks using the Gateway API
  * @param {Object} options - Search options
  * @returns {Promise<Object>} Search results with nodes array
  */
 export async function searchChubLorebooks(options = {}) {
-    const params = new URLSearchParams({
-        search: options.search || '',
-        first: String(options.limit || 48),
-        page: String(options.page || 1),
+    return performChubSearch({
+        ...options,
         namespace: 'lorebooks',
-        include_forks: 'true',
-        nsfw: String(options.nsfw ?? true),
-        nsfw_only: 'false',
-        nsfl: String(options.nsfl ?? true),
-        asc: String(options.asc ?? false),
-        sort: options.sort || 'star_count',
-        count: 'false'
+        sort: options.sort || 'download_count',
     });
-
-    // Tag filters
-    if (options.tags) {
-        params.append('topics', options.tags);
-    }
-    if (options.excludeTags) {
-        params.append('excludetopics', options.excludeTags);
-    }
-
-    // Username filter
-    if (options.username) {
-        params.append('username', options.username);
-    }
-
-    console.log('[Bot Browser] Fetching Chub lorebooks:', `${CHUB_GATEWAY_BASE}/search?${params}`);
-
-    const response = await proxiedFetch(`${CHUB_GATEWAY_BASE}/search?${params}`, {
-        service: 'chub_gateway',
-        fetchOptions: {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json',
-                ...getChubAuthHeaders(),
-            },
-        },
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text().catch(() => '');
-        throw new Error(`Chub Lorebooks API error ${response.status}: ${errorText}`);
-    }
-
-    const data = await response.json();
-    console.log('[Bot Browser] Chub Lorebooks API response:', data);
-    return data;
 }
 
 /**

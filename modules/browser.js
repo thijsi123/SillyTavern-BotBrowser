@@ -20,6 +20,15 @@ import {
 import { searchChubCards, transformChubCard } from './services/chubApi.js';
 import { searchBackyardCharacters, transformBackyardCard, backyardApiState, resetBackyardApiState, loadMoreBackyardCharacters, BACKYARD_SORT_TYPES } from './services/backyardApi.js';
 import { pygmalionApiState, resetPygmalionApiState, loadMorePygmalionCharacters } from './services/pygmalionApi.js';
+import { searchCharavaultCards, transformCharavaultCard, charavaultApiState, resetCharavaultState } from './services/charavaultApi.js';
+import { searchSakuraCharacters, transformSakuraCard, sakuraApiState, resetSakuraState } from './services/sakuraApi.js';
+import { searchSaucepanCompanions, transformSaucepanCard, saucepanApiState, resetSaucepanState } from './services/saucepanApi.js';
+import { browseCrushonCharacters, searchCrushonCharacters, transformCrushonCard, crushonApiState, resetCrushonState } from './services/crushonApi.js';
+import { searchHarpyCharacters, transformHarpyCard, harpyApiState, resetHarpyState } from './services/harpyApi.js';
+import { searchBotify, transformBotifyCard, botifyApiState, resetBotifyState, BOTIFY_SORT_OPTIONS } from './services/botifyApi.js';
+import { getJoylandHomepage, browseJoylandBots, transformJoylandHomepageCard, transformJoylandCard, joylandApiState, resetJoylandState, JOYLAND_SORT_TYPES, JOYLAND_CATEGORIES } from './services/joylandApi.js';
+import { searchSpicychat, transformSpicychatCard, spicychatApiState, resetSpicychatState, SPICYCHAT_SORT_OPTIONS } from './services/spicychatApi.js';
+import { browseTalkieCharacters, transformTalkieCard, talkieApiState, resetTalkieState } from './services/talkieApi.js';
 
 // JannyAI API state for pagination
 let jannyApiState = {
@@ -158,6 +167,34 @@ export async function createCardBrowser(serviceName, cards, state, extensionName
     if (state.isPygmalion && serviceName === 'pygmalion') {
         resetPygmalionApiState();
     }
+
+    // New live API services
+    state.isCharaVault = serviceName === 'charavault' || cards.some(c => c.isCharaVault || c.service === 'charavault');
+    if (state.isCharaVault && serviceName === 'charavault') resetCharavaultState();
+
+    state.isSakura = serviceName === 'sakura' || cards.some(c => c.isSakura || c.service === 'sakura');
+    if (state.isSakura && serviceName === 'sakura') resetSakuraState();
+
+    state.isSaucepan = serviceName === 'saucepan' || cards.some(c => c.isSaucepan || c.service === 'saucepan');
+    if (state.isSaucepan && serviceName === 'saucepan') resetSaucepanState();
+
+    state.isCrushon = serviceName === 'crushon' || cards.some(c => c.isCrushon || c.service === 'crushon');
+    if (state.isCrushon && serviceName === 'crushon') resetCrushonState();
+
+    state.isHarpy = serviceName === 'harpy' || cards.some(c => c.isHarpy || c.service === 'harpy');
+    if (state.isHarpy && serviceName === 'harpy') resetHarpyState();
+
+    state.isBotify = serviceName === 'botify' || cards.some(c => c.isBotify || c.service === 'botify');
+    if (state.isBotify && serviceName === 'botify') { resetBotifyState(); botifyApiState.activeSort = BOTIFY_SORT_OPTIONS.FEATURED; }
+
+    state.isJoyland = serviceName === 'joyland' || cards.some(c => c.isJoyland || c.service === 'joyland');
+    if (state.isJoyland && serviceName === 'joyland') resetJoylandState();
+
+    state.isSpicychat = serviceName === 'spicychat' || cards.some(c => c.isSpicychat || c.service === 'spicychat');
+    if (state.isSpicychat && serviceName === 'spicychat') resetSpicychatState();
+
+    state.isTalkie = serviceName === 'talkie' || cards.some(c => c.isTalkie || c.service === 'talkie');
+    if (state.isTalkie && serviceName === 'talkie') resetTalkieState();
 
     // Detect if this is Character Tavern with live API enabled
     const useCharacterTavernLiveApi = extension_settings[extensionName].useCharacterTavernLiveApi === true;
@@ -371,6 +408,14 @@ export async function createCardBrowser(serviceName, cards, state, extensionName
         gridWrapper.insertAdjacentHTML('beforeend', createBulkActionBar());
     }
 
+    // Inject service-specific controls (categories, sorts, filters) for new live APIs
+    if (state.isBotify || state.isJoyland || state.isSpicychat || state.isTalkie) {
+        const searchSection = menuContent.querySelector('#bot-browser-search-section');
+        if (searchSection) {
+            searchSection.insertAdjacentHTML('afterend', createServiceControlsHTML(state));
+        }
+    }
+
     // Render first page immediately for better perceived performance
     renderPage(state, menuContent, showCardDetailFunc, extensionName, extension_settings);
 
@@ -407,6 +452,11 @@ export async function createCardBrowser(serviceName, cards, state, extensionName
     // Add advanced filter event listeners for Wyvern
     if (state.isWyvern) {
         setupWyvernAdvancedFilterListeners(menuContent, state, extensionName, extension_settings, showCardDetailFunc);
+    }
+
+    // Add service control listeners for new live API services
+    if (state.isBotify || state.isJoyland || state.isSpicychat || state.isTalkie) {
+        setupServiceControlListeners(menuContent, state, extensionName, extension_settings, showCardDetailFunc);
     }
 
     // Setup dismiss handler for API warning banner
@@ -1855,6 +1905,24 @@ function renderPage(state, menuContent, showCardDetailFunc, extensionName, exten
         paginationHTML = createChubPaginationHTML(pygmalionApiState.page, pygmalionApiState.hasMore, false);
     } else if (state.isRisuRealm) {
         paginationHTML = createChubPaginationHTML(risuRealmApiState.page, risuRealmApiState.hasMore, false);
+    } else if (state.isCharaVault) {
+        paginationHTML = createChubPaginationHTML(1, charavaultApiState.hasMore, false);
+    } else if (state.isSakura) {
+        paginationHTML = createChubPaginationHTML(1, sakuraApiState.hasMore, false);
+    } else if (state.isSaucepan) {
+        paginationHTML = createChubPaginationHTML(1, saucepanApiState.hasMore, false);
+    } else if (state.isCrushon) {
+        paginationHTML = createChubPaginationHTML(1, crushonApiState.hasMore, false);
+    } else if (state.isHarpy) {
+        paginationHTML = createChubPaginationHTML(1, harpyApiState.hasMore, false);
+    } else if (state.isBotify) {
+        paginationHTML = createChubPaginationHTML(1, botifyApiState.hasMore, false);
+    } else if (state.isJoyland) {
+        paginationHTML = createChubPaginationHTML(1, joylandApiState.hasMore, false);
+    } else if (state.isSpicychat) {
+        paginationHTML = createChubPaginationHTML(1, spicychatApiState.hasMore, false);
+    } else if (state.isTalkie) {
+        paginationHTML = createChubPaginationHTML(1, talkieApiState.hasMore, false);
     } else {
         paginationHTML = createPaginationHTML(state.currentPage, state.totalPages);
     }
@@ -1915,6 +1983,24 @@ function renderPage(state, menuContent, showCardDetailFunc, extensionName, exten
         setupPygmalionPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
     } else if (state.isRisuRealm) {
         setupRisuRealmPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isCharaVault) {
+        setupCharaVaultPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isSakura) {
+        setupSakuraPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isSaucepan) {
+        setupSaucepanPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isCrushon) {
+        setupCrushonPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isHarpy) {
+        setupHarpyPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isBotify) {
+        setupBotifyPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isJoyland) {
+        setupJoylandPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isSpicychat) {
+        setupSpicychatPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+    } else if (state.isTalkie) {
+        setupTalkiePaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
     } else {
         setupPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings);
     }
@@ -2601,6 +2687,209 @@ function setupRisuRealmPaginationListeners(gridContainer, state, menuContent, sh
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = originalHTML;
+            }
+        });
+    });
+}
+
+function setupCharaVaultPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings) {
+    const pagination = gridContainer.querySelector('.bot-browser-pagination');
+    if (!pagination) return;
+
+    pagination.querySelectorAll('.bot-browser-pagination-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (btn.dataset.action !== 'next' || !charavaultApiState.hasMore) return;
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading...';
+
+            try {
+                const result = await searchCharavaultCards({
+                    search: charavaultApiState.lastSearch,
+                    sort: charavaultApiState.lastSort,
+                    offset: charavaultApiState.offset
+                });
+
+                const cards = result.characters.map(transformCharavaultCard);
+                charavaultApiState.offset = result.nextOffset;
+                charavaultApiState.hasMore = result.hasMore;
+
+                state.currentCards = [...state.currentCards, ...cards];
+                state.filteredCards = applyClientSideFilters(state.currentCards, state, extensionName, extension_settings);
+                state.currentPage = 1;
+                state.totalPages = 1;
+
+                renderPage(state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+                console.log(`[Bot Browser] Loaded ${cards.length} more CharaVault cards`);
+            } catch (error) {
+                console.error('[Bot Browser] Failed to load more CharaVault cards:', error);
+                toastr.error('Failed to load more cards');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Load More <i class="fa-solid fa-angle-right"></i>';
+            }
+        });
+    });
+}
+
+function setupSakuraPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings) {
+    const pagination = gridContainer.querySelector('.bot-browser-pagination');
+    if (!pagination) return;
+
+    pagination.querySelectorAll('.bot-browser-pagination-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (btn.dataset.action !== 'next' || !sakuraApiState.hasMore) return;
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading...';
+
+            try {
+                const result = await searchSakuraCharacters({
+                    search: sakuraApiState.lastSearch,
+                    sortType: sakuraApiState.lastSort,
+                    offset: sakuraApiState.offset,
+                    allowNsfw: sakuraApiState.lastNsfw
+                });
+
+                const cards = result.characters.map(transformSakuraCard);
+                sakuraApiState.offset += result.characters.length;
+                sakuraApiState.hasMore = result.hasMore;
+
+                state.currentCards = [...state.currentCards, ...cards];
+                state.filteredCards = applyClientSideFilters(state.currentCards, state, extensionName, extension_settings);
+                state.currentPage = 1;
+                state.totalPages = 1;
+
+                renderPage(state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+                console.log(`[Bot Browser] Loaded ${cards.length} more Sakura.fm cards`);
+            } catch (error) {
+                console.error('[Bot Browser] Failed to load more Sakura.fm cards:', error);
+                toastr.error('Failed to load more cards');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Load More <i class="fa-solid fa-angle-right"></i>';
+            }
+        });
+    });
+}
+
+function setupSaucepanPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings) {
+    const pagination = gridContainer.querySelector('.bot-browser-pagination');
+    if (!pagination) return;
+
+    pagination.querySelectorAll('.bot-browser-pagination-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (btn.dataset.action !== 'next' || !saucepanApiState.hasMore) return;
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading...';
+
+            try {
+                const result = await searchSaucepanCompanions({
+                    search: saucepanApiState.lastSearch,
+                    sort: saucepanApiState.lastSort,
+                    offset: saucepanApiState.offset,
+                    nsfw: !extension_settings[extensionName].hideNsfw
+                });
+
+                const cards = result.characters.map(transformSaucepanCard);
+                saucepanApiState.offset += result.characters.length;
+                saucepanApiState.hasMore = result.hasMore;
+
+                state.currentCards = [...state.currentCards, ...cards];
+                state.filteredCards = applyClientSideFilters(state.currentCards, state, extensionName, extension_settings);
+                state.currentPage = 1;
+                state.totalPages = 1;
+
+                renderPage(state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+                console.log(`[Bot Browser] Loaded ${cards.length} more Saucepan cards`);
+            } catch (error) {
+                console.error('[Bot Browser] Failed to load more Saucepan cards:', error);
+                toastr.error('Failed to load more cards');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Load More <i class="fa-solid fa-angle-right"></i>';
+            }
+        });
+    });
+}
+
+function setupCrushonPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings) {
+    const pagination = gridContainer.querySelector('.bot-browser-pagination');
+    if (!pagination) return;
+
+    pagination.querySelectorAll('.bot-browser-pagination-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (btn.dataset.action !== 'next' || !crushonApiState.hasMore) return;
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading...';
+
+            try {
+                const result = await browseCrushonCharacters({
+                    collectionKind: crushonApiState.lastCollectionKind,
+                    cursor: crushonApiState.cursor,
+                    nsfw: crushonApiState.lastNsfw,
+                    version: crushonApiState.version
+                });
+
+                const cards = result.characters.map(transformCrushonCard);
+                crushonApiState.cursor = result.nextCursor;
+                crushonApiState.hasMore = result.hasMore;
+
+                state.currentCards = [...state.currentCards, ...cards];
+                state.filteredCards = applyClientSideFilters(state.currentCards, state, extensionName, extension_settings);
+                state.currentPage = 1;
+                state.totalPages = 1;
+
+                renderPage(state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+                console.log(`[Bot Browser] Loaded ${cards.length} more CrushOn.ai cards`);
+            } catch (error) {
+                console.error('[Bot Browser] Failed to load more CrushOn.ai cards:', error);
+                toastr.error('Failed to load more cards');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Load More <i class="fa-solid fa-angle-right"></i>';
+            }
+        });
+    });
+}
+
+function setupHarpyPaginationListeners(gridContainer, state, menuContent, showCardDetailFunc, extensionName, extension_settings) {
+    const pagination = gridContainer.querySelector('.bot-browser-pagination');
+    if (!pagination) return;
+
+    pagination.querySelectorAll('.bot-browser-pagination-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (btn.dataset.action !== 'next' || !harpyApiState.hasMore) return;
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading...';
+
+            try {
+                const result = await searchHarpyCharacters({
+                    search: harpyApiState.lastSearch,
+                    sort: harpyApiState.lastSort,
+                    offset: harpyApiState.offset
+                });
+
+                const cards = result.characters.map(transformHarpyCard);
+                harpyApiState.offset += result.characters.length;
+                harpyApiState.hasMore = result.hasMore;
+
+                state.currentCards = [...state.currentCards, ...cards];
+                state.filteredCards = applyClientSideFilters(state.currentCards, state, extensionName, extension_settings);
+                state.currentPage = 1;
+                state.totalPages = 1;
+
+                renderPage(state, menuContent, showCardDetailFunc, extensionName, extension_settings);
+                console.log(`[Bot Browser] Loaded ${cards.length} more Harpy.chat cards`);
+            } catch (error) {
+                console.error('[Bot Browser] Failed to load more Harpy.chat cards:', error);
+                toastr.error('Failed to load more cards');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Load More <i class="fa-solid fa-angle-right"></i>';
             }
         });
     });

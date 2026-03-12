@@ -1,7 +1,7 @@
 // Pygmalion.chat API Module
 // Uses Connect RPC protocol at server.pygmalion.chat
 
-import { proxiedFetch } from './corsProxy.js';
+import { getAuthHeadersForService, proxiedFetch } from './corsProxy.js';
 
 const PYGMALION_API_BASE = 'https://server.pygmalion.chat/galatea.v1.PublicCharacterService';
 
@@ -13,8 +13,14 @@ export const PYGMALION_SORT_TYPES = {
     TOKEN_COUNT: 'token_count',
     STARS: 'stars',
     NAME: 'display_name',
+    NAME_ALIAS: 'name',
     DOWNLOADS: 'downloads',
-    VIEWS: 'views'
+    VIEWS: 'views',
+    CHAT_COUNT: 'chatCount',
+    CREATED_AT: 'createdAt',
+    UPDATED_AT: 'updatedAt',
+    TRENDING: 'trending',
+    RANDOM: 'random',
 };
 
 /**
@@ -33,7 +39,8 @@ async function fetchPygmalionApi(method, input) {
             headers: {
                 'Accept': '*/*',
                 'Content-Type': 'application/json',
-                'Connect-Protocol-Version': '1'
+                'Connect-Protocol-Version': '1',
+                ...getAuthHeadersForService('pygmalion'),
             },
             body: JSON.stringify(input)
         }
@@ -59,7 +66,9 @@ export async function searchPygmalionCharacters(options = {}) {
         orderDescending = true,
         includeSensitive = true,
         pageSize = 60,
-        page = 1
+        page = 1,
+        tagsNamesInclude = [],
+        tagsNamesExclude = [],
     } = options;
 
     const input = {
@@ -74,8 +83,14 @@ export async function searchPygmalionCharacters(options = {}) {
     }
 
     // API uses 0-indexed pages, our state uses 1-indexed
-    if (page > 1) {
-        input.page = page - 1;
+    input.pageNumber = Math.max(0, Number(page || 1) - 1);
+
+    if (Array.isArray(tagsNamesInclude) && tagsNamesInclude.length > 0) {
+        input.tagsNamesInclude = tagsNamesInclude;
+    }
+
+    if (Array.isArray(tagsNamesExclude) && tagsNamesExclude.length > 0) {
+        input.tagsNamesExclude = tagsNamesExclude;
     }
 
     const result = await fetchPygmalionApi('CharacterSearch', input);
@@ -102,6 +117,70 @@ export async function getPygmalionCharacter(characterId, versionId = '') {
     });
 
     return result.character || result;
+}
+
+export async function getPygmalionExportCharacter(characterId) {
+    const response = await proxiedFetch(`https://server.pygmalion.chat/api/export/character/${encodeURIComponent(characterId)}/v2`, {
+        service: 'pygmalion',
+        fetchOptions: {
+            headers: {
+                Accept: 'application/json',
+                ...getAuthHeadersForService('pygmalion'),
+            },
+        },
+    });
+
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Pygmalion export error: ${response.status} - ${text}`);
+    }
+
+    return response.json();
+}
+
+function extractPygmalionExportData(payload) {
+    if (!payload || typeof payload !== 'object') return {};
+    if (payload.character?.data && typeof payload.character.data === 'object') return payload.character.data;
+    if (payload.data && typeof payload.data === 'object') return payload.data;
+    if (payload.character && typeof payload.character === 'object') return payload.character;
+    return payload;
+}
+
+export function transformPygmalionExportCharacter(payload, fallbackMeta = {}) {
+    const data = extractPygmalionExportData(payload);
+
+    return {
+        name: data.name || fallbackMeta.displayName || 'Unnamed',
+        description: data.description || '',
+        personality: data.personality || '',
+        scenario: data.scenario || '',
+        first_mes: data.first_mes || data.firstMessage || '',
+        first_message: data.first_mes || data.firstMessage || '',
+        mes_example: data.mes_example || data.exampleMessage || '',
+        creator_notes: data.creator_notes || fallbackMeta.description || '',
+        system_prompt: data.system_prompt || data.systemPrompt || '',
+        post_history_instructions: data.post_history_instructions || data.postHistoryInstructions || '',
+        alternate_greetings: data.alternate_greetings || data.alternateGreetings || [],
+        character_book: data.character_book || data.characterBook,
+        tags: Array.isArray(data.tags) ? data.tags : (fallbackMeta.tags || []),
+        creator: data.creator || fallbackMeta.owner?.displayName || fallbackMeta.owner?.username || 'Unknown',
+        character_version: data.character_version || fallbackMeta.versionLabel || '1.0',
+        avatar_url: data.avatar || fallbackMeta.avatarUrl || '',
+        image_url: data.avatar || fallbackMeta.avatarUrl || '',
+        website_description: fallbackMeta.description || '',
+        tokenCount: fallbackMeta.personalityTokenCount || 0,
+        extensions: {
+            pygmalion: {
+                id: fallbackMeta.id,
+                versionId: fallbackMeta.versionId,
+                source: fallbackMeta.source,
+                stars: fallbackMeta.stars,
+                views: fallbackMeta.views,
+                downloads: fallbackMeta.downloads,
+                chatCount: fallbackMeta.chatCount,
+            },
+        },
+    };
 }
 
 /**
@@ -181,6 +260,7 @@ export function transformPygmalionCard(char) {
  */
 export function transformFullPygmalionCharacter(char) {
     const personality = char.personality || {};
+    const creatorNotes = personality.characterNotes || (char.description && char.description !== personality.persona ? char.description : '');
 
     return {
         name: personality.name || char.displayName || 'Unnamed',
@@ -190,7 +270,7 @@ export function transformFullPygmalionCharacter(char) {
         first_mes: personality.greeting || '',
         first_message: personality.greeting || '',
         mes_example: '',
-        creator_notes: char.description || '',
+        creator_notes: creatorNotes,
         system_prompt: '',
         post_history_instructions: '',
         alternate_greetings: [],
@@ -274,8 +354,11 @@ export async function loadMorePygmalionCharacters(options = {}) {
 export async function browsePygmalionCharacters(options = {}) {
     const {
         orderBy = PYGMALION_SORT_TYPES.NEWEST,
+        orderDescending = true,
         includeSensitive = true,
-        page = 1
+        page = 1,
+        tagsNamesInclude = [],
+        tagsNamesExclude = [],
     } = options;
 
     // Reset state for new browse
@@ -285,8 +368,11 @@ export async function browsePygmalionCharacters(options = {}) {
 
     const result = await searchPygmalionCharacters({
         orderBy,
+        orderDescending,
         includeSensitive,
-        page
+        page,
+        tagsNamesInclude,
+        tagsNamesExclude,
     });
 
     pygmalionApiState.hasMore = result.hasMore;

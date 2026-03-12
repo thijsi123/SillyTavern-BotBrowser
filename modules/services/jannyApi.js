@@ -1,13 +1,77 @@
 import { proxiedFetch, getAuthHeadersForService } from './corsProxy.js';
 
 const JANNY_SEARCH_URL = 'https://search.jannyai.com/multi-search';
+const JANNY_API_BASE = 'https://jannyai.com/api';
 const JANNY_FALLBACK_TOKEN = '88a6463b66e04fb07ba87ee3db06af337f492ce511d93df6e2d2968cb2ff2b30';
-const JANNY_IMAGE_BASE = 'https://image.jannyai.com/bot-avatars/';
+export const JANNY_IMAGE_BASE = 'https://image.jannyai.com/bot-avatars/';
 const DEBUG = typeof window !== 'undefined' && window.__BOT_BROWSER_DEBUG === true;
 
 // Cached token state
 let cachedToken = null;
 let tokenFetchPromise = null;
+const jannyCharacterDetailsCache = new Map();
+const jannyCreatorProfileCache = new Map();
+const jannyCharacterUrlCache = new Map();
+
+async function fetchJannyHtml(url) {
+    return proxiedFetch(url, {
+        service: 'jannyai',
+        fetchOptions: {
+            headers: {
+                'Accept': 'text/html',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            },
+        },
+    });
+}
+
+function extractCanonicalJannyCharacterPath(html, characterId) {
+    const normalizedId = String(characterId || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!normalizedId) return '';
+
+    const match = html.match(new RegExp(`href=["'](\\/characters\\/${normalizedId}_[^"']+)["']`, 'i'));
+    return String(match?.[1] || '').trim();
+}
+
+async function resolveJannyCharacterUrl(characterId, searchHint = '') {
+    const normalizedId = String(characterId || '').trim();
+    if (!normalizedId) return '';
+    if (jannyCharacterUrlCache.has(normalizedId)) {
+        return jannyCharacterUrlCache.get(normalizedId);
+    }
+
+    const query = String(searchHint || '')
+        .replace(/\|/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!query) {
+        return '';
+    }
+
+    const searchUrl = new URL('https://jannyai.com/characters/search');
+    searchUrl.searchParams.set('janny-characters[query]', query);
+
+    try {
+        const response = await fetchJannyHtml(searchUrl.toString());
+        if (!response.ok) {
+            return '';
+        }
+
+        const html = await response.text();
+        const path = extractCanonicalJannyCharacterPath(html, normalizedId);
+        if (!path) {
+            return '';
+        }
+
+        const fullUrl = `https://jannyai.com${path.startsWith('/') ? path : `/${path}`}`;
+        jannyCharacterUrlCache.set(normalizedId, fullUrl);
+        return fullUrl;
+    } catch (error) {
+        console.warn('[Bot Browser] Failed to resolve JannyAI canonical URL:', error?.message || error);
+        return '';
+    }
+}
 
 /**
  * Fetch the MeiliSearch API token from JannyAI's client config
@@ -135,6 +199,380 @@ export const JANNYAI_TAG_IDS = Object.fromEntries(
     Object.entries(JANNYAI_TAGS).map(([id, name]) => [name.toLowerCase(), parseInt(id)])
 );
 
+export function getJannyAvatarUrl(avatar) {
+    const value = String(avatar || '').trim();
+    if (!value) return '';
+    if (/^https?:\/\//i.test(value)) return value;
+    return `${JANNY_IMAGE_BASE}${value}`;
+}
+
+function normalizeJannySlugValue(value, fallbackName = '') {
+    const explicit = String(value || '').trim();
+    if (explicit) {
+        const normalized = explicit
+            .replace(/^character-/, '')
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .substring(0, 80);
+        return normalized ? `character-${normalized}` : 'character';
+    }
+
+    const fallback = String(fallbackName || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .substring(0, 80);
+
+    return fallback ? `character-${fallback}` : 'character';
+}
+
+export function getJannyCharacterUrl(characterId, slug, fallbackName = '') {
+    const normalizedId = String(characterId || '').trim();
+    if (!normalizedId) return '';
+    return `https://jannyai.com/characters/${normalizedId}_${normalizeJannySlugValue(slug, fallbackName)}`;
+}
+
+function normalizeJannyCreatorSlug(value = '') {
+    return String(value || 'creator')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .substring(0, 80) || 'creator';
+}
+
+export function getJannyCreatorUrl(creatorId, creatorName = '') {
+    const normalizedId = String(creatorId || '').trim();
+    if (!normalizedId) return '';
+    return `https://jannyai.com/creators/${normalizedId}_profile-${normalizeJannyCreatorSlug(creatorName)}`;
+}
+
+function normalizeJannyCharactersPayload(data) {
+    if (Array.isArray(data?.characters)) return data.characters;
+    if (Array.isArray(data)) return data;
+    return [];
+}
+
+/**
+ * Fetch JannyAI character payloads by UUID.
+ * Used to hydrate lightweight feeds like JanitorAI trending with the richer Janny JSON payload.
+ * @param {string[]|string} ids - One or more JannyAI character UUIDs
+ * @returns {Promise<Object[]>} Character payloads
+ */
+export async function getJannyCharactersByIds(ids = []) {
+    const normalizedIds = [...new Set((Array.isArray(ids) ? ids : [ids])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean))];
+
+    if (normalizedIds.length === 0) {
+        return [];
+    }
+
+    const chunkSize = 20;
+    const chunks = [];
+    for (let i = 0; i < normalizedIds.length; i += chunkSize) {
+        chunks.push(normalizedIds.slice(i, i + chunkSize));
+    }
+
+    const results = await Promise.all(chunks.map(async (chunk) => {
+        const url = `${JANNY_API_BASE}/get-characters?ids=${encodeURIComponent(chunk.join(','))}`;
+        const response = await proxiedFetch(url, {
+            service: 'jannyai',
+            fetchOptions: {
+                headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                }
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch JannyAI characters: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return normalizeJannyCharactersPayload(data);
+    }));
+
+    return results.flat();
+}
+
+function parseJannyCreatorProfile(html, creatorId, creatorName = '') {
+    const titleMatch = html.match(/<title>\s*Profile of creator\s+([^<]+?)\s*<\/title>/i);
+    const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']Profile of creator\s+([^"']+)["']/i);
+    const imageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+    const canonicalMatch = html.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i);
+
+    const characterRefs = [];
+    const seen = new Set();
+    const cardRegex = /\/characters\/([0-9a-f-]{36})_([a-z0-9-]+)/ig;
+    let match;
+
+    while ((match = cardRegex.exec(html)) !== null) {
+        const id = String(match[1] || '').trim();
+        const slug = String(match[2] || '').trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        characterRefs.push({
+            id,
+            slug,
+            fullPath: `${id}_${slug}`,
+        });
+    }
+
+    return {
+        creatorId: String(creatorId || '').trim(),
+        creatorName: String(titleMatch?.[1] || ogTitleMatch?.[1] || creatorName || '').trim(),
+        avatarUrl: String(imageMatch?.[1] || '').trim(),
+        url: String(canonicalMatch?.[1] || getJannyCreatorUrl(creatorId, creatorName)).trim(),
+        characterRefs,
+    };
+}
+
+function normalizeJannyCreatorProfileUrl(url, creatorId, creatorName = '') {
+    const explicit = String(url || '').trim();
+    if (explicit && !/_profile-creator(?:[/?#]|$)/i.test(explicit)) {
+        return explicit;
+    }
+    return getJannyCreatorUrl(creatorId, creatorName);
+}
+
+function mergeJannyCreatorCharacter(detail, ref, creatorProfile) {
+    return {
+        ...(detail || {}),
+        id: ref.id,
+        slug: detail?.slug || ref.slug,
+        fullPath: ref.fullPath,
+        creatorId: detail?.creatorId || creatorProfile.creatorId || '',
+        creatorName: detail?.creatorName || detail?.creatorUsername || creatorProfile.creatorName || '',
+        creatorUrl: detail?.creatorUrl || creatorProfile.url || '',
+    };
+}
+
+function pickExactCreatorMatch(cards, creatorName) {
+    const needle = String(creatorName || '').trim().toLowerCase();
+    if (!needle) return null;
+
+    return (cards || []).find((card) => {
+        const candidates = [
+            card?.creatorName,
+            card?.creatorUsername,
+            card?.creator,
+        ];
+        return candidates.some((candidate) => String(candidate || '').trim().toLowerCase() === needle);
+    }) || null;
+}
+
+function matchesJannyCreatorSearch(record, search) {
+    const needle = normalizePlainText(search);
+    if (!needle) return true;
+
+    const tagNames = Array.isArray(record?.tags)
+        ? record.tags.map((tag) => tag?.name || tag?.slug || tag).filter(Boolean)
+        : [];
+    const haystack = normalizePlainText([
+        record?.name,
+        stripHtml(record?.description),
+        ...tagNames,
+    ].join(' '));
+
+    return haystack.includes(needle);
+}
+
+function matchesJannyCreatorTagFilter(record, tagIds = []) {
+    if (!Array.isArray(tagIds) || tagIds.length === 0) return true;
+    const recordTagIds = Array.isArray(record?.tagIds) ? record.tagIds.map((id) => Number(id)) : [];
+    return recordTagIds.some((id) => tagIds.includes(id));
+}
+
+function sortJannyCreatorCharacters(characters, sort) {
+    const normalizedSort = String(sort || 'newest').trim();
+    const out = [...characters];
+
+    switch (normalizedSort) {
+        case 'tokens-desc':
+            return out.sort((left, right) => Number(right?.totalToken || 0) - Number(left?.totalToken || 0));
+        case 'tokens-asc':
+            return out.sort((left, right) => Number(left?.totalToken || 0) - Number(right?.totalToken || 0));
+        case 'permanent-desc':
+            return out.sort((left, right) => Number(right?.permanentToken || 0) - Number(left?.permanentToken || 0));
+        case 'permanent-asc':
+            return out.sort((left, right) => Number(left?.permanentToken || 0) - Number(right?.permanentToken || 0));
+        case 'oldest':
+            return out.reverse();
+        case 'newest':
+        case 'relevance':
+        case 'trending':
+        default:
+            return out;
+    }
+}
+
+async function resolveJannyCreatorFromSearch(creatorName) {
+    const needle = normalizePlainText(creatorName);
+    if (!needle) return null;
+
+    const maxPages = 3;
+    const hitLimitPerPage = 10;
+    const concurrency = 5;
+
+    for (let page = 1; page <= maxPages; page += 1) {
+        const fallbackSearch = await searchJannyCharacters({
+            search: creatorName,
+            page,
+            limit: 40,
+            sort: '',
+            nsfw: true,
+        });
+        const hits = (fallbackSearch?.results?.[0]?.hits || []).slice(0, hitLimitPerPage);
+        if (hits.length === 0) continue;
+
+        for (let index = 0; index < hits.length; index += concurrency) {
+            const batch = hits.slice(index, index + concurrency);
+            const hydrated = await Promise.all(batch.map(async (hit) => {
+                try {
+                    return await fetchJannyCharacterDetails(hit.id, normalizeJannySlugValue('', hit.slug || hit.name || ''));
+                } catch (error) {
+                    console.warn('[Bot Browser] Janny creator resolution failed for hit:', hit?.id, error);
+                    return null;
+                }
+            }));
+
+            const exactMatch = pickExactCreatorMatch(
+                hydrated
+                    .map((entry) => entry?.character ? {
+                        ...entry.character,
+                        creatorUrl: entry.creatorUrl || '',
+                    } : null)
+                    .filter(Boolean),
+                creatorName,
+            );
+            if (exactMatch?.creatorId) {
+                return {
+                    creatorId: String(exactMatch.creatorId || '').trim(),
+                    creatorName: String(exactMatch.creatorName || creatorName || '').trim(),
+                    creatorUrl: String(exactMatch.creatorUrl || '').trim(),
+                };
+            }
+        }
+    }
+
+    return null;
+}
+
+export async function fetchJannyCreatorProfile(options = {}) {
+    let creatorId = String(options.creatorId || '').trim();
+    let creatorName = String(options.creatorName || '').trim();
+
+    if (!creatorId && !creatorName) {
+        throw new Error('JannyAI creator lookup requires a creator ID or name');
+    }
+
+    const cacheKey = `${creatorId}:${creatorName.toLowerCase()}`;
+    if (jannyCreatorProfileCache.has(cacheKey)) {
+        return jannyCreatorProfileCache.get(cacheKey);
+    }
+
+    if (!creatorId && creatorName) {
+        const resolved = await resolveJannyCreatorFromSearch(creatorName);
+        if (resolved?.creatorId) {
+            creatorId = resolved.creatorId;
+            creatorName = resolved.creatorName || creatorName;
+        }
+    }
+
+    if (!creatorId) {
+        throw new Error(`Could not resolve JannyAI creator "${creatorName}" to a creator profile`);
+    }
+
+    const creatorUrl = getJannyCreatorUrl(creatorId, creatorName);
+    const response = await proxiedFetch(creatorUrl, {
+        service: 'jannyai',
+        fetchOptions: {
+            headers: {
+                'Accept': 'text/html',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            }
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to fetch JannyAI creator profile: ${response.status}`);
+    }
+
+    const html = await response.text();
+    const parsedProfile = parseJannyCreatorProfile(html, creatorId, creatorName);
+    const details = await getJannyCharactersByIds(parsedProfile.characterRefs.map((ref) => ref.id));
+    const detailMap = new Map(details.map((detail) => [String(detail?.id || '').trim(), detail]));
+
+    const characters = parsedProfile.characterRefs
+        .map((ref) => mergeJannyCreatorCharacter(detailMap.get(ref.id), ref, parsedProfile))
+        .filter((character) => character && character.id);
+
+    const profile = {
+        creatorId,
+        creatorName: parsedProfile.creatorName || creatorName || creatorId,
+        avatarUrl: parsedProfile.avatarUrl || '',
+        url: normalizeJannyCreatorProfileUrl(
+            parsedProfile.url,
+            creatorId,
+            parsedProfile.creatorName || creatorName,
+        ),
+        characters,
+    };
+
+    jannyCreatorProfileCache.set(cacheKey, profile);
+    return profile;
+}
+
+export async function getJannyCreatorCharacters(options = {}) {
+    const {
+        creatorId = '',
+        creatorName = '',
+        search = '',
+        page = 1,
+        limit = 40,
+        sort = 'newest',
+        nsfw = true,
+        minTokens = 29,
+        maxTokens = 4101,
+        tagIds = [],
+        excludeLowQuality = false,
+    } = options;
+
+    const profile = await fetchJannyCreatorProfile({ creatorId, creatorName });
+    const filtered = (profile.characters || []).filter((character) => {
+        const totalToken = Number(character?.totalToken || 0);
+        if (!nsfw && character?.isNsfw) return false;
+        if (excludeLowQuality && character?.isLowQuality) return false;
+        if (totalToken < minTokens || totalToken > maxTokens) return false;
+        if (!matchesJannyCreatorTagFilter(character, tagIds)) return false;
+        if (!matchesJannyCreatorSearch(character, search)) return false;
+        return true;
+    });
+
+    const sorted = sortJannyCreatorCharacters(filtered, sort).map((character, index) => ({
+        ...character,
+        creatorId: character?.creatorId || profile.creatorId || '',
+        creatorName: character?.creatorName || profile.creatorName || '',
+        creatorUrl: character?.creatorUrl || profile.url || '',
+        createdAt: character?.createdAt || character?.created_at || new Date(Date.now() - index * 1000).toISOString(),
+    }));
+
+    const offset = Math.max(0, (Number(page) - 1) * Number(limit || 40));
+    const sliced = sorted.slice(offset, offset + limit);
+
+    return {
+        profile,
+        characters: sliced,
+        totalHits: sorted.length,
+        hasMore: offset + limit < sorted.length,
+    };
+}
+
 /**
  * Search JannyAI characters using MeiliSearch API
  * @param {Object} options - Search options
@@ -149,7 +587,8 @@ export async function searchJannyCharacters(options = {}) {
         nsfw = true,
         minTokens = 29,
         maxTokens = 4101,
-        tagIds = []
+        tagIds = [],
+        excludeLowQuality = false,
     } = options;
 
     // Build filter array
@@ -157,8 +596,12 @@ export async function searchJannyCharacters(options = {}) {
 
     // Add tag filters if provided
     if (tagIds.length > 0) {
-        const tagFilter = tagIds.map(id => `tagIds = ${id}`).join(' OR ');
+        const tagFilter = tagIds.map(id => `tagIds = ${id}`).join(' AND ');
         filters.push(`(${tagFilter})`);
+    }
+
+    if (excludeLowQuality) {
+        filters.push('isLowQuality = false');
     }
 
     const requestBody = {
@@ -227,29 +670,47 @@ export async function searchJannyCharacters(options = {}) {
  * Fetch character details from JannyAI via CORS proxy
  * @param {string} characterId - Character UUID
  * @param {string} slug - Character slug (name-slugified)
+ * @param {string} fallbackName - Visible card name used to recover the canonical page slug
  * @returns {Promise<Object>} Character data
  */
-export async function fetchJannyCharacterDetails(characterId, slug) {
-    const characterUrl = `https://jannyai.com/characters/${characterId}_${slug}`;
+export async function fetchJannyCharacterDetails(characterId, slug, fallbackName = '') {
+    const normalizedId = String(characterId || '').trim();
+    if (!normalizedId) {
+        throw new Error('JannyAI character ID is required');
+    }
+
+    const cacheKey = `${normalizedId}:${normalizeJannySlugValue(slug)}`;
+    if (jannyCharacterDetailsCache.has(cacheKey)) {
+        return jannyCharacterDetailsCache.get(cacheKey);
+    }
+
+    const characterUrl = getJannyCharacterUrl(normalizedId, slug, fallbackName);
 
     if (DEBUG) console.log('[Bot Browser] Fetching JannyAI character:', characterUrl);
 
-    const response = await proxiedFetch(characterUrl, {
-        service: 'jannyai',
-        fetchOptions: {
-            headers: {
-                'Accept': 'text/html',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+    let response = await fetchJannyHtml(characterUrl);
+    let finalUrl = characterUrl;
+
+    if (!response.ok && response.status === 404) {
+        const canonicalUrl = await resolveJannyCharacterUrl(normalizedId, fallbackName || slug);
+        if (canonicalUrl && canonicalUrl !== characterUrl) {
+            finalUrl = canonicalUrl;
+            response = await fetchJannyHtml(canonicalUrl);
         }
-    });
+    }
 
     if (!response.ok) {
         throw new Error(`Failed to fetch JannyAI character: ${response.status}`);
     }
 
     const html = await response.text();
-    return parseAstroCharacterProps(html);
+    const parsed = parseAstroCharacterProps(html);
+    parsed.character = {
+        ...(parsed.character || {}),
+        canonicalUrl: finalUrl,
+    };
+    jannyCharacterDetailsCache.set(cacheKey, parsed);
+    return parsed;
 }
 
 /**
@@ -258,14 +719,38 @@ export async function fetchJannyCharacterDetails(characterId, slug) {
  * @returns {Object} Character data
  */
 function parseAstroCharacterProps(html) {
-    // Find the astro-island with CharacterButtons which contains full character data
+    const astroPayload = parseAstroCharacterIsland(html);
+    const doc = parseJannyHtmlDocument(html);
+    const definitionFields = parseJannyDefinitionFields(doc);
+    const creatorMeta = parseJannyCreatorMeta(doc, html);
+
+    const mergedCharacter = {
+        ...(astroPayload.character || {}),
+        ...(definitionFields.personality ? { personality: definitionFields.personality } : {}),
+        ...(definitionFields.scenario !== undefined ? { scenario: definitionFields.scenario } : {}),
+        ...(definitionFields.firstMessage ? { firstMessage: definitionFields.firstMessage } : {}),
+        ...(definitionFields.exampleDialogs ? { exampleDialogs: definitionFields.exampleDialogs } : {}),
+        ...(creatorMeta.creatorId ? { creatorId: creatorMeta.creatorId } : {}),
+        ...(creatorMeta.creatorName ? {
+            creatorName: creatorMeta.creatorName,
+            creatorUsername: creatorMeta.creatorName,
+        } : {}),
+    };
+
+    return {
+        character: mergedCharacter,
+        imageUrl: astroPayload.imageUrl || '',
+        creatorUrl: creatorMeta.creatorUrl || astroPayload.creatorUrl || '',
+    };
+}
+
+function parseAstroCharacterIsland(html) {
     const astroMatch = html.match(/astro-island[^>]*component-export="CharacterButtons"[^>]*props="([^"]+)"/);
 
     if (!astroMatch) {
         throw new Error('Could not find character data in JannyAI page');
     }
 
-    // Decode HTML entities in the props string
     const propsEncoded = astroMatch[1];
     const propsDecoded = propsEncoded
         .replace(/&quot;/g, '"')
@@ -282,11 +767,135 @@ function parseAstroCharacterProps(html) {
         throw new Error('Failed to parse character data from JannyAI page');
     }
 
-    // Astro serializes data in format: [type, value] where type 0 = primitive, 1 = array
-    const character = decodeAstroValue(propsJson.character);
-    const imageUrl = decodeAstroValue(propsJson.imageUrl);
+    return {
+        character: decodeAstroValue(propsJson.character),
+        imageUrl: decodeAstroValue(propsJson.imageUrl),
+        creatorUrl: '',
+    };
+}
 
-    return { character, imageUrl };
+function parseJannyHtmlDocument(html) {
+    if (typeof DOMParser === 'undefined') {
+        return null;
+    }
+
+    try {
+        return new DOMParser().parseFromString(html, 'text/html');
+    } catch (error) {
+        console.warn('[Bot Browser] Failed to parse JannyAI HTML document:', error);
+        return null;
+    }
+}
+
+function normalizeJannyDefinitionValue(value) {
+    return String(value || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\r/g, '')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n[ \t]+/g, '\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+function normalizeJannyDefinitionLabel(value) {
+    return String(value || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/:+$/g, '')
+        .trim()
+        .toLowerCase();
+}
+
+function extractJannyDefinitionFieldValue(paragraph, labelNode) {
+    if (!paragraph) return '';
+    const clone = paragraph.cloneNode(true);
+    const cloneLabel = labelNode ? clone.querySelector('span') : null;
+    if (cloneLabel?.remove) {
+        cloneLabel.remove();
+    }
+    return normalizeJannyDefinitionValue(clone.textContent || '');
+}
+
+function parseJannyDefinitionFields(doc) {
+    if (!doc) {
+        return {};
+    }
+
+    const details = [...doc.querySelectorAll('details')].find((section) => {
+        const summaryText = section.querySelector('summary')?.textContent || '';
+        return /character definition/i.test(summaryText);
+    });
+
+    if (!details) {
+        return {};
+    }
+
+    const fields = {};
+    const paragraphs = details.querySelectorAll('li > p, p');
+
+    for (const paragraph of paragraphs) {
+        const labelNode = paragraph.querySelector('span');
+        const label = normalizeJannyDefinitionLabel(labelNode?.textContent || '');
+        if (!label) continue;
+
+        const value = extractJannyDefinitionFieldValue(paragraph, labelNode);
+        if (label === 'personality') fields.personality = value;
+        else if (label === 'scenario') fields.scenario = value;
+        else if (label === 'first message') fields.firstMessage = value;
+        else if (label === 'example dialogs') fields.exampleDialogs = value;
+    }
+
+    return fields;
+}
+
+function parseJannyCreatorMeta(doc, html) {
+    const fallbackMatch = html.match(/href="(\/creators\/([0-9a-f-]{36})_[^"]+)"/i);
+    const fallbackCreatorUrl = fallbackMatch?.[1] ? `https://jannyai.com${fallbackMatch[1]}` : '';
+    const fallbackCreatorId = String(fallbackMatch?.[2] || '').trim();
+
+    if (!doc) {
+        return {
+            creatorUrl: fallbackCreatorUrl,
+            creatorId: fallbackCreatorId,
+            creatorName: '',
+        };
+    }
+
+    const anchor = doc.querySelector('a[href*="/creators/"]');
+    const href = String(anchor?.getAttribute('href') || '').trim();
+    const creatorUrl = href
+        ? `https://jannyai.com${href.startsWith('/') ? href : `/${href}`}`
+        : fallbackCreatorUrl;
+    const creatorIdMatch = creatorUrl.match(/\/creators\/([0-9a-f-]{36})_/i);
+    const creatorName = String(anchor?.textContent || '')
+        .replace(/^@/, '')
+        .trim();
+
+    return {
+        creatorUrl,
+        creatorId: String(creatorIdMatch?.[1] || fallbackCreatorId || '').trim(),
+        creatorName,
+    };
+}
+
+function extractJannyDescriptionImages(value) {
+    const raw = String(value || '');
+    if (!raw) return [];
+
+    const matches = [...raw.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)];
+    const seen = new Set();
+    const out = [];
+
+    for (const match of matches) {
+        const url = String(match?.[1] || '').trim();
+        if (!url) continue;
+        const key = url.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(url);
+    }
+
+    return out;
 }
 
 /**
@@ -337,13 +946,14 @@ export function transformJannyCard(hit) {
 
     // The description from search is the short website description/tagline
     const websiteDesc = stripHtml(hit.description) || '';
+    const creatorName = String(hit.creatorUsername || hit.creatorName || hit.creator || '').trim();
 
     return {
         id: hit.id,
         name: hit.name || 'Unnamed',
-        creator: '', // JannyAI doesn't provide creator in search results without extra API calls
-        avatar_url: hit.avatar ? `${JANNY_IMAGE_BASE}${hit.avatar}` : '',
-        image_url: `https://jannyai.com/characters/${hit.id}_character-${slug}`,
+        creator: creatorName,
+        avatar_url: getJannyAvatarUrl(hit.avatar),
+        image_url: getJannyCharacterUrl(hit.id, slug, hit.name),
         tags: tags,
         description: websiteDesc,
         website_description: websiteDesc, // Short tagline shown on JannyAI website
@@ -355,11 +965,18 @@ export function transformJannyCard(hit) {
         isJannyAI: true,
         service: 'jannyai',
         slug: slug,
+        creatorName: creatorName || '',
+        creatorId: hit.creatorId || '',
+        creatorUrl: hit.creatorUrl || '',
         // Store additional metadata
         totalToken: hit.totalToken || 0,
         permanentToken: hit.permanentToken || 0,
         chatCount: hit.stats?.chatCount || 0,
-        messageCount: hit.stats?.messageCount || 0
+        messageCount: hit.stats?.messageCount || 0,
+        downloadCount: hit.stats?.downloadCount || 0,
+        viewCount: hit.stats?.viewCount || 0,
+        bookmarkCount: hit.stats?.bookmarkCount || 0,
+        isLowQuality: hit.isLowQuality || false,
     };
 }
 
@@ -382,11 +999,13 @@ export function transformFullJannyCharacter(charData) {
     // JannyAI's "firstMessage" is the first greeting
     // JannyAI's "exampleDialogs" is the example messages
     // JannyAI's "scenario" is the scenario
-    const websiteDesc = stripHtml(char.description) || '';
+    const rawWebsiteDesc = String(char.description || '').trim();
+    const websiteDesc = stripHtml(rawWebsiteDesc) || '';
     const personality = char.personality || '';
     const firstMessage = char.firstMessage || '';
     const exampleDialogs = char.exampleDialogs || '';
     const scenario = char.scenario || '';
+    const galleryImages = extractJannyDescriptionImages(rawWebsiteDesc);
 
     return {
         name: char.name || 'Unnamed',
@@ -398,17 +1017,19 @@ export function transformFullJannyCharacter(charData) {
         scenario: scenario,
         first_message: firstMessage,
         mes_example: exampleDialogs,
-        creator_notes: websiteDesc, // Also store in creator_notes for import
+        creator_notes: rawWebsiteDesc || websiteDesc, // Preserve Janny's rich HTML description
         system_prompt: '',
         post_history_instructions: '',
         alternate_greetings: [],
         tags: tags,
-        creator: '', // JannyAI doesn't expose creator name reliably
+        creator: char.creatorName || '', // Only present on the SSR/detail payload
         character_version: '1.0',
+        gallery_images: galleryImages,
         extensions: {
             jannyai: {
                 id: char.id,
-                creatorId: char.creatorId
+                creatorId: char.creatorId,
+                creatorName: char.creatorName || '',
             }
         }
     };
@@ -442,5 +1063,17 @@ function stripHtml(html) {
         .replace(/&gt;/g, '>')
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
+        .trim();
+}
+
+function normalizePlainText(value) {
+    return stripHtml(value)
+        .toLowerCase()
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/['’]/g, '')
+        .replace(/&/g, ' and ')
+        .replace(/[^a-z0-9\s]+/g, ' ')
+        .replace(/\s+/g, ' ')
         .trim();
 }

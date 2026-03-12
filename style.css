@@ -4447,3 +4447,357 @@ body .st-proxy-modal-backdrop,
     user-select: text;
     -webkit-user-select: text;
 }
+
+/* ==================== Chub Account Features ==================== */
+
+/* Card stats bar on card thumbnails */
+.bot-browser-card-stats {
+    display: flex;
+    gap: 8px;
+    padding: 4px 0 0;
+    font-size: 0.7em;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.bot-browser-card-stats span {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.bot-browser-card-stats i {
+    font-size: 0.85em;
+}
+
+/* Favorite badge on card thumbnail */
+.bot-browser-card-fav-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    background: rgba(255, 60, 60, 0.85);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: white;
+    pointer-events: none;
+    z-index: 2;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* Chub Favorite button in detail modal */
+.bot-browser-chub-favorite-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: 1px solid rgba(255, 100, 100, 0.3);
+    background: rgba(255, 100, 100, 0.1);
+    color: rgba(255, 150, 150, 0.9);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.2s;
+}
+
+.bot-browser-chub-favorite-btn:hover {
+    background: rgba(255, 100, 100, 0.2);
+    border-color: rgba(255, 100, 100, 0.5);
+}
+
+.bot-browser-chub-favorite-btn.favorited {
+    background: rgba(255, 60, 60, 0.25);
+    border-color: rgba(255, 60, 60, 0.5);
+    color: #ff6b6b;
+}
+
+.bot-browser-chub-favorite-btn.favorited:hover {
+    background: rgba(255, 60, 60, 0.15);
+}
+
+.bot-browser-chub-favorite-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Gallery grid */
+.bot-browser-gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    padding: 8px 0;
+}
+
+.bot-browser-gallery-thumb {
+    aspect-ratio: 1;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.bot-browser-gallery-thumb:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Follow button */
+.bot-browser-follow-section {
+    padding: 8px 0;
+}
+
+.bot-browser-follow-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    width: 100%;
+    border: 1px solid rgba(100, 150, 255, 0.3);
+    background: rgba(100, 150, 255, 0.1);
+    color: rgba(150, 190, 255, 0.9);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: all 0.2s;
+    justify-content: center;
+}
+
+.bot-browser-follow-btn:hover {
+    background: rgba(100, 150, 255, 0.2);
+    border-color: rgba(100, 150, 255, 0.5);
+}
+
+.bot-browser-follow-btn.following {
+    background: rgba(80, 200, 120, 0.15);
+    border-color: rgba(80, 200, 120, 0.4);
+    color: rgba(120, 220, 150, 0.9);
+}
+
+.bot-browser-follow-btn.following:hover {
+    background: rgba(255, 100, 100, 0.15);
+    border-color: rgba(255, 100, 100, 0.4);
+    color: rgba(255, 150, 150, 0.9);
+}
+
+.bot-browser-follow-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Enhanced stats grid */
+.bot-browser-detail-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    padding: 8px 0;
+}
+
+.bb-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 10px 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.bb-stat i {
+    font-size: 1.1em;
+    color: rgba(255, 255, 255, 0.4);
+    margin-bottom: 2px;
+}
+
+.bb-stat span {
+    font-size: 1.05em;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.bb-stat small {
+    font-size: 0.7em;
+    color: rgba(255, 255, 255, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Chub token input styling in settings */
+#bb-setting-chub-token {
+    font-size: 0.85em;
+}
+
+/* Auth-only source buttons - hidden state handled via inline style + JS */
+.bot-browser-chub-auth-only,
+.bb-charavault-auth-only,
+.bb-sakura-auth-only,
+.bb-crushon-auth-only {
+    position: relative;
+}
+
+.bot-browser-chub-auth-only::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 8px;
+    height: 8px;
+    background: rgba(80, 200, 120, 0.8);
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.3);
+}
+
+/* ============================================================
+   SERVICE AUTH SECTIONS (in Settings > API tab)
+   ============================================================ */
+
+.bb-service-auth-section {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-top: 10px;
+}
+
+.bb-service-auth-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.bb-service-auth-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 5px;
+    flex-shrink: 0;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+
+.bb-auth-badge {
+    margin-left: auto;
+    font-size: 0.75em;
+    padding: 2px 8px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
+
+.bb-auth-badge.logged-in {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.25);
+}
+
+.bb-auth-badge.logged-out {
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.bb-auth-form {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+    align-items: center;
+}
+
+.bb-auth-form input.text_pole {
+    flex: 1;
+    min-width: 90px;
+    font-size: 0.85em;
+}
+
+.bb-auth-paste-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+    align-items: center;
+}
+
+.bb-auth-paste-row input.text_pole {
+    flex: 1;
+    font-family: monospace;
+    font-size: 0.78em;
+}
+
+.bb-auth-hint {
+    font-size: 0.78em;
+    color: rgba(255, 255, 255, 0.45);
+    line-height: 1.5;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 5px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+}
+
+.bb-auth-hint code {
+    background: rgba(0, 0, 0, 0.4);
+    color: rgba(120, 210, 120, 0.9);
+    font-family: monospace;
+    padding: 0 3px;
+    border-radius: 3px;
+}
+
+.bb-auth-login-btn {
+    background: rgba(96, 130, 230, 0.2);
+    border: 1px solid rgba(96, 130, 230, 0.35);
+    color: rgba(160, 190, 255, 1);
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.83em;
+    white-space: nowrap;
+    transition: background 0.15s;
+}
+
+.bb-auth-login-btn:hover:not(:disabled) {
+    background: rgba(96, 130, 230, 0.35);
+}
+
+.bb-auth-verify-btn {
+    background: rgba(34, 160, 80, 0.2);
+    border: 1px solid rgba(34, 160, 80, 0.35);
+    color: rgba(80, 220, 120, 1);
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.83em;
+    white-space: nowrap;
+    transition: background 0.15s;
+}
+
+.bb-auth-verify-btn:hover:not(:disabled) {
+    background: rgba(34, 160, 80, 0.35);
+}
+
+.bb-auth-logout-btn {
+    background: rgba(220, 60, 60, 0.15);
+    border: 1px solid rgba(220, 60, 60, 0.3);
+    color: rgba(255, 110, 110, 1);
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.83em;
+    white-space: nowrap;
+    transition: background 0.15s;
+}
+
+.bb-auth-logout-btn:hover:not(:disabled) {
+    background: rgba(220, 60, 60, 0.28);
+}
+
+.bb-auth-logged-in-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}

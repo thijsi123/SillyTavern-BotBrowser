@@ -6,6 +6,10 @@ import { proxiedFetch } from './corsProxy.js';
 const RISU_BASE_URL = 'https://realm.risuai.net';
 const RISU_DATA_URL = `${RISU_BASE_URL}/__data.json`;
 const RISU_IMAGE_BASE = 'https://sv.risuai.xyz/resource/';
+const RISU_SVELTEKIT_PARAMS = {
+    'x-sveltekit-trailing-slash': '1',
+    'x-sveltekit-invalidated': '01',
+};
 
 // API state for pagination
 export let risuRealmApiState = {
@@ -32,69 +36,124 @@ export function getRisuRealmApiState() {
     return risuRealmApiState;
 }
 
+function buildRisuDataUrl(pathname = '/__data.json', params = {}) {
+    const url = new URL(pathname, RISU_BASE_URL);
+
+    for (const [key, value] of Object.entries({
+        ...RISU_SVELTEKIT_PARAMS,
+        ...params,
+    })) {
+        if (value === undefined || value === null || value === '') {
+            continue;
+        }
+
+        url.searchParams.set(key, String(value));
+    }
+
+    return url.toString();
+}
+
+function resolveDevalueEntry(data, index, seen = new Set()) {
+    if (!Array.isArray(data) || typeof index !== 'number' || index < 0 || data[index] === undefined) {
+        return null;
+    }
+
+    if (seen.has(index)) {
+        return null;
+    }
+
+    const entry = data[index];
+    if (entry === null || entry === undefined) {
+        return entry;
+    }
+
+    if (typeof entry !== 'object') {
+        return entry;
+    }
+
+    seen.add(index);
+
+    try {
+        if (Array.isArray(entry)) {
+            return entry.map((item) => resolveDevalueField(data, item, seen));
+        }
+
+        const out = {};
+        for (const [key, value] of Object.entries(entry)) {
+            out[key] = resolveDevalueField(data, value, seen);
+        }
+
+        return out;
+    } finally {
+        seen.delete(index);
+    }
+}
+
+function resolveDevalueField(data, value, seen = new Set()) {
+    if (value === -1) {
+        return null;
+    }
+
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && data[value] !== undefined) {
+        return resolveDevalueEntry(data, value, seen);
+    }
+
+    if (Array.isArray(value)) {
+        return value.map((item) => resolveDevalueField(data, item, seen));
+    }
+
+    return value;
+}
+
+function extractRisuNodeData(json) {
+    if (json?.nodes?.[1]?.data && Array.isArray(json.nodes[1].data)) {
+        return json.nodes[1].data;
+    }
+
+    if (json?.nodes?.[0]?.data && Array.isArray(json.nodes[0].data)) {
+        return json.nodes[0].data;
+    }
+
+    if (Array.isArray(json?.data)) {
+        return json.data;
+    }
+
+    if (Array.isArray(json?.nodes)) {
+        for (const node of json.nodes) {
+            if (Array.isArray(node?.data)) {
+                return node.data;
+            }
+        }
+    }
+
+    return null;
+}
+
+function decodeRisuRoot(json) {
+    const nodeData = extractRisuNodeData(json);
+    if (!nodeData || !Array.isArray(nodeData)) {
+        throw new Error('Invalid RisuRealm response format - could not find data array');
+    }
+
+    return {
+        nodeData,
+        root: resolveDevalueEntry(nodeData, 0) || {},
+    };
+}
+
 /**
  * Parse SvelteKit devalue format data
  * @param {Array} data - Raw data array from __data.json
  * @returns {Array} Parsed character objects
  */
 function parseDevalueData(data) {
-    const cards = [];
-
-    if (!data || !Array.isArray(data) || data.length < 3) {
-        return cards;
+    try {
+        const root = resolveDevalueEntry(data, 0) || {};
+        return Array.isArray(root.cards) ? root.cards.filter(card => card?.id && card?.name) : [];
+    } catch (e) {
+        console.warn('[Bot Browser] Failed to parse RisuRealm cards:', e);
+        return [];
     }
-
-    // data[0] = metadata object with indexes
-    // data[1] = array of card indexes
-    // data[2] onwards = schema and card data
-
-    const cardIndexes = data[1];
-    if (!Array.isArray(cardIndexes)) {
-        return cards;
-    }
-
-    // Helper to resolve a value - if it's an array of indices, resolve each one
-    const resolveValue = (value) => {
-        if (Array.isArray(value)) {
-            // Array of indices - resolve each element
-            return value.map(idx => {
-                if (typeof idx === 'number' && data[idx] !== undefined) {
-                    return data[idx];
-                }
-                return idx;
-            });
-        }
-        return value;
-    };
-
-    // Each card starts with a schema object followed by values
-    // Schema looks like: {name:3, desc:4, download:5, id:6, img:7, tags:8, ...}
-
-    for (const startIndex of cardIndexes) {
-        try {
-            const schema = data[startIndex];
-            if (!schema || typeof schema !== 'object') continue;
-
-            const card = {};
-
-            // Extract values using schema indexes
-            for (const [key, valueIndex] of Object.entries(schema)) {
-                if (typeof valueIndex === 'number' && data[valueIndex] !== undefined) {
-                    card[key] = resolveValue(data[valueIndex]);
-                } else {
-                    card[key] = valueIndex; // Direct value (like booleans)
-                }
-            }
-
-            if (card.id && card.name) {
-                cards.push(card);
-            }
-        } catch (e) {
-            console.warn('[Bot Browser] Failed to parse RisuRealm card:', e);
-        }
-    }
-
-    return cards;
 }
 
 /**
@@ -107,36 +166,21 @@ export async function searchRisuRealm(options = {}) {
         search = '',
         page = 1,
         sort = 'recommended', // recommended, download, date
-        nsfw = true
+        nsfw = true,
+        mode = 'character',
     } = options;
 
     risuRealmApiState.isLoading = true;
 
     try {
-        const params = new URLSearchParams();
-
-        // Sort parameter - empty string for 'recommended' default
-        if (sort && sort !== 'recommended') {
-            params.set('sort', sort);
-        } else {
-            params.set('sort', '');
-        }
-
-        // Page parameter - SvelteKit uses 1-indexed pages
-        params.set('page', page.toString());
-
-        if (search) {
-            params.set('q', search);
-        }
-
-        if (!nsfw) {
-            params.set('nsfw', 'false');
-        }
-
-        // Add cache-busting timestamp to force fresh data
-        params.set('_t', Date.now().toString());
-
-        const url = `${RISU_DATA_URL}?${params}`;
+        const url = buildRisuDataUrl('/__data.json', {
+            sort: sort && sort !== 'recommended' ? sort : '',
+            mode,
+            page,
+            q: search || undefined,
+            nsfw: !nsfw ? 'false' : undefined,
+            _t: Date.now(),
+        });
         console.log('[Bot Browser] RisuRealm API request:', url);
 
         const response = await proxiedFetch(url, {
@@ -156,41 +200,7 @@ export async function searchRisuRealm(options = {}) {
         const json = await response.json();
         console.log('[Bot Browser] RisuRealm raw response structure:', Object.keys(json));
 
-        // Navigate to the data array - try multiple paths
-        // SvelteKit response format can vary
-        let nodeData = null;
-
-        // Try nodes[1].data first (initial page load format)
-        if (json?.nodes?.[1]?.data) {
-            nodeData = json.nodes[1].data;
-            console.log('[Bot Browser] Found data at nodes[1].data');
-        }
-        // Try nodes[0].data (alternative format)
-        else if (json?.nodes?.[0]?.data) {
-            nodeData = json.nodes[0].data;
-            console.log('[Bot Browser] Found data at nodes[0].data');
-        }
-        // Try direct data property
-        else if (json?.data) {
-            nodeData = json.data;
-            console.log('[Bot Browser] Found data at root data property');
-        }
-        // Try nodes array directly
-        else if (Array.isArray(json?.nodes)) {
-            // Find the node with character data
-            for (let i = 0; i < json.nodes.length; i++) {
-                if (json.nodes[i]?.data && Array.isArray(json.nodes[i].data)) {
-                    nodeData = json.nodes[i].data;
-                    console.log(`[Bot Browser] Found data at nodes[${i}].data`);
-                    break;
-                }
-            }
-        }
-
-        if (!nodeData) {
-            console.error('[Bot Browser] RisuRealm response structure:', JSON.stringify(json).substring(0, 1000));
-            throw new Error('Invalid RisuRealm response format - could not find data array');
-        }
+        const { nodeData, root } = decodeRisuRoot(json);
 
         const cards = parseDevalueData(nodeData);
 
@@ -201,16 +211,14 @@ export async function searchRisuRealm(options = {}) {
 
         // Get pagination info from metadata
         // The metadata structure varies - look for totalPages, pages, or page count
-        const metadata = nodeData[0];
+        const metadata = root || {};
         let totalPages = 1;
 
-        // Try different possible field names for total pages
         if (typeof metadata?.totalPages === 'number') {
             totalPages = metadata.totalPages;
         } else if (typeof metadata?.pages === 'number') {
             totalPages = metadata.pages;
         } else if (typeof metadata?.page === 'number' && metadata.page > 1) {
-            // 'page' in metadata might be total pages, not current page
             totalPages = metadata.page;
         }
 
@@ -281,7 +289,7 @@ export async function fetchRisuRealmTrending(options = {}) {
  * @returns {Promise<Object>} Full character data
  */
 export async function fetchRisuRealmCharacter(characterId) {
-    const url = `${RISU_BASE_URL}/character/${characterId}/__data.json`;
+    const url = buildRisuDataUrl(`/character/${encodeURIComponent(characterId)}/__data.json`);
     console.log('[Bot Browser] RisuRealm Character API request:', url);
 
     const response = await proxiedFetch(url, {
@@ -298,40 +306,141 @@ export async function fetchRisuRealmCharacter(characterId) {
     }
 
     const json = await response.json();
+    const { root } = decodeRisuRoot(json);
+    const card = root?.card && typeof root.card === 'object' ? { ...root.card } : {};
 
-    // Navigate to the data array
-    const nodeData = json?.nodes?.[1]?.data;
-    if (!nodeData || !Array.isArray(nodeData)) {
-        throw new Error('Invalid RisuRealm character response format');
+    if (root?.username && !card.authorname) {
+        card.authorname = root.username;
     }
-
-    // Parse the devalue format - first element is metadata, second is card schema
-    const cardSchema = nodeData[1];
-    if (!cardSchema || typeof cardSchema !== 'object') {
-        throw new Error('Invalid RisuRealm character schema');
-    }
-
-    const card = {};
-    for (const [key, valueIndex] of Object.entries(cardSchema)) {
-        if (typeof valueIndex === 'number' && nodeData[valueIndex] !== undefined) {
-            let value = nodeData[valueIndex];
-            // Resolve nested arrays (like tags)
-            if (Array.isArray(value)) {
-                value = value.map(idx => {
-                    if (typeof idx === 'number' && nodeData[idx] !== undefined) {
-                        return nodeData[idx];
-                    }
-                    return idx;
-                });
-            }
-            card[key] = value;
-        } else {
-            card[key] = valueIndex;
-        }
+    if (root?.descHTML && !card.descHTML) {
+        card.descHTML = root.descHTML;
     }
 
     console.log('[Bot Browser] RisuRealm Character loaded:', card.name);
     return card;
+}
+
+export function getRisuRealmDownloadUrl(characterId, format = 'json-v3', accessToken = 'guest') {
+    const url = new URL(`/api/v1/download/${format}/${encodeURIComponent(characterId)}`, RISU_BASE_URL);
+    url.searchParams.set('non_commercial', 'true');
+    url.searchParams.set('cors', 'true');
+    url.searchParams.set('access_token', accessToken || 'guest');
+    return url.toString();
+}
+
+export async function downloadRisuRealmCharacterExport(characterId, accessToken = 'guest') {
+    const response = await proxiedFetch(getRisuRealmDownloadUrl(characterId, 'json-v3', accessToken), {
+        service: 'risuai_realm',
+        fetchOptions: {
+            headers: {
+                Accept: 'application/json',
+            },
+        },
+    });
+
+    if (!response.ok) {
+        throw new Error(`RisuRealm export error: ${response.status}`);
+    }
+
+    return response.json();
+}
+
+function extractRisuExportData(payload) {
+    if (!payload || typeof payload !== 'object') return {};
+    if (payload.data && typeof payload.data === 'object') return payload.data;
+    if (payload.character?.data && typeof payload.character.data === 'object') return payload.character.data;
+    if (payload.character && typeof payload.character === 'object') return payload.character;
+    return payload;
+}
+
+export function transformDownloadedRisuRealmCharacter(payload, fallbackCard = {}) {
+    const data = extractRisuExportData(payload);
+    const baseCard = transformRisuRealmCard({
+        ...fallbackCard,
+        id: fallbackCard.id || data.id,
+        name: data.name || fallbackCard.name,
+        desc: data.description || fallbackCard.desc || fallbackCard.description || '',
+        tags: Array.isArray(data.tags) ? data.tags : (fallbackCard.tags || []),
+        authorname: data.creator || fallbackCard.authorname || fallbackCard.creator || '',
+        creator: fallbackCard.creator || fallbackCard.creatorId || '',
+    });
+
+    return {
+        ...baseCard,
+        name: data.name || baseCard.name,
+        description: data.description || '',
+        personality: data.personality || '',
+        scenario: data.scenario || '',
+        first_mes: data.first_mes || data.firstMessage || '',
+        first_message: data.first_mes || data.firstMessage || '',
+        mes_example: data.mes_example || data.exampleMessage || '',
+        creator_notes: data.creator_notes || '',
+        system_prompt: data.system_prompt || data.systemPrompt || '',
+        post_history_instructions: data.post_history_instructions || data.postHistoryInstructions || '',
+        alternate_greetings: data.alternate_greetings || data.alternateGreetings || [],
+        character_book: data.character_book || data.characterBook,
+        tags: Array.isArray(data.tags) ? data.tags : baseCard.tags,
+        creator: data.creator || baseCard.creator,
+        character_version: data.character_version || data.characterVersion || '',
+        website_description: fallbackCard.desc || fallbackCard.description || '',
+        hasFullData: true,
+    };
+}
+
+/**
+ * Fetch a public RisuRealm creator profile and every published card listed there.
+ * @param {string} username - Creator username/handle
+ * @returns {Promise<Object>} Profile payload with cards
+ */
+export async function fetchRisuRealmCreatorProfile(username) {
+    const handle = String(username || '').trim().replace(/^@/, '');
+    if (!handle) {
+        throw new Error('RisuRealm creator username is required');
+    }
+
+    const url = buildRisuDataUrl(`/creator/${encodeURIComponent(handle)}/__data.json`);
+    console.log('[Bot Browser] RisuRealm Creator API request:', url);
+
+    const response = await proxiedFetch(url, {
+        service: 'risuai_realm',
+        fetchOptions: {
+            headers: {
+                'Accept': 'application/json'
+            }
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`RisuRealm Creator API error: ${response.status}`);
+    }
+
+    const json = await response.json();
+    const { root } = decodeRisuRoot(json);
+    const cards = Array.isArray(root?.characterResult) ? root.characterResult : [];
+    const userID = String(root?.userID || handle).trim() || handle;
+
+    return {
+        userID,
+        descHTML: root?.descHTML || '',
+        isDev: !!root?.isDev,
+        cards,
+        url: `${RISU_BASE_URL}/creator/${encodeURIComponent(userID)}`,
+    };
+}
+
+function stripHtml(html) {
+    if (!html) return '';
+
+    return String(html)
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 
 /**
@@ -341,15 +450,21 @@ export async function fetchRisuRealmCharacter(characterId) {
  */
 export function transformFullRisuRealmCharacter(card) {
     const baseCard = transformRisuRealmCard(card);
+    const fullDescription = stripHtml(card.descHTML) || card.desc || baseCard.description;
+    const creatorNotes = [
+        card.license ? `License: ${card.license}` : '',
+        card.shared ? 'Shared character: yes' : '',
+    ].filter(Boolean).join('\n');
 
     // Add any additional fields from full character data
     return {
         ...baseCard,
         // Full description (may be longer than search results)
-        description: card.desc || baseCard.description,
+        description: fullDescription,
         license: card.license || '',
         isShared: card.shared || false,
         creatorId: card.creator || '',
+        creator_notes: creatorNotes,
         // Mark as having full data
         hasFullData: true
     };
@@ -379,14 +494,16 @@ export function transformRisuRealmCard(card) {
         name: card.name || 'Unnamed',
         creator: card.authorname || '',
         avatar_url: card.img ? `${RISU_IMAGE_BASE}${card.img}` : '',
-        image_url: `${RISU_BASE_URL}/character/${card.id}`,
+        image_url: card.img ? `${RISU_IMAGE_BASE}${card.img}` : '',
+        gallery_images: card.img ? [`${RISU_IMAGE_BASE}${card.img}`] : [],
+        source_url: card.id ? `${RISU_BASE_URL}/character/${card.id}` : '',
         tags: tags,
         description: card.desc || '',
         desc_preview: (card.desc || '').substring(0, 150),
         desc_search: `${card.name || ''} ${card.desc || ''} ${tags.join(' ')}`,
         downloads: downloads,
         downloadCount: downloads,
-        possibleNsfw: false, // RisuRealm doesn't seem to flag NSFW in the data
+        possibleNsfw: Number(card.hidden || 0) === 1,
         service: 'risuai_realm',
         sourceService: 'risuai_realm',
         isLiveApi: true,
@@ -395,6 +512,7 @@ export function transformRisuRealmCard(card) {
         hasEmotion: card.hasEmotion || false,
         hasAsset: card.hasAsset || false,
         type: card.type || 'normal',
-        created_at: card.date ? new Date(card.date * 1000).toISOString() : null
+        created_at: card.date ? new Date(card.date * 1000).toISOString() : null,
+        creatorUrl: card.authorname ? `${RISU_BASE_URL}/creator/${encodeURIComponent(card.authorname)}` : '',
     };
 }

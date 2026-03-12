@@ -8,6 +8,15 @@ import { loadCardChunk } from '../services/cache.js';
 import { fetchQuillgenCard } from '../services/quillgenApi.js';
 import { buildProxyUrl, PROXY_TYPES, proxiedFetch } from '../services/corsProxy.js';
 import { getPygmalionCharacter, transformFullPygmalionCharacter } from '../services/pygmalionApi.js';
+import { getCharavaultCard, getCharavaultDownloadUrl } from '../services/charavaultApi.js';
+import { getSakuraCharacter, transformFullSakuraCharacter } from '../services/sakuraApi.js';
+import { getSaucepanCompanion, transformFullSaucepanCompanion } from '../services/saucepanApi.js';
+import { getCrushonCharacter, transformFullCrushonCharacter } from '../services/crushonApi.js';
+import { getHarpyCharacter, transformFullHarpyCharacter } from '../services/harpyApi.js';
+import { getBotifyBot, transformFullBotifyBot } from '../services/botifyApi.js';
+import { transformFullJoylandBot } from '../services/joylandApi.js';
+import { transformFullSpicychatCharacter } from '../services/spicychatApi.js';
+import { getTalkieCharacter, transformFullTalkieCharacter } from '../services/talkieApi.js';
 
 /**
  * Import a character file directly without tag popup
@@ -345,6 +354,59 @@ async function importCharacter(card, extensionName, extension_settings, importSt
     if (card.isPygmalion || card.service === 'pygmalion' || card.sourceService === 'pygmalion' || card.sourceService === 'pygmalion_trending') {
         console.log('[Bot Browser] Importing Pygmalion card:', card.name);
         return await importPygmalionCard(card, extensionName, extension_settings, importStats);
+    }
+
+    // Handle CharaVault cards - download actual PNG card file
+    if (card.isCharaVault || card.service === 'charavault' || card.sourceService === 'charavault') {
+        console.log('[Bot Browser] Importing CharaVault card:', card.name);
+        return await importCharaVaultCard(card, extensionName, extension_settings, importStats);
+    }
+
+    // Handle Sakura.fm cards
+    if (card.isSakura || card.service === 'sakura' || card.sourceService === 'sakura') {
+        console.log('[Bot Browser] Importing Sakura.fm card:', card.name);
+        return await importApiCard(card, extensionName, extension_settings, importStats, 'sakura', getSakuraCharacter, transformFullSakuraCharacter);
+    }
+
+    // Handle Saucepan.ai cards
+    if (card.isSaucepan || card.service === 'saucepan' || card.sourceService === 'saucepan') {
+        console.log('[Bot Browser] Importing Saucepan.ai card:', card.name);
+        return await importApiCard(card, extensionName, extension_settings, importStats, 'saucepan', getSaucepanCompanion, transformFullSaucepanCompanion);
+    }
+
+    // Handle CrushOn.ai cards
+    if (card.isCrushon || card.service === 'crushon' || card.sourceService === 'crushon') {
+        console.log('[Bot Browser] Importing CrushOn.ai card:', card.name);
+        return await importApiCard(card, extensionName, extension_settings, importStats, 'crushon', getCrushonCharacter, transformFullCrushonCharacter);
+    }
+
+    // Handle Harpy.chat cards
+    if (card.isHarpy || card.service === 'harpy' || card.sourceService === 'harpy') {
+        console.log('[Bot Browser] Importing Harpy.chat card:', card.name);
+        return await importApiCard(card, extensionName, extension_settings, importStats, 'harpy', getHarpyCharacter, transformFullHarpyCharacter);
+    }
+
+    if (card.isBotify || card.service === 'botify' || card.sourceService === 'botify') {
+        console.log('[Bot Browser] Importing Botify.ai card:', card.name);
+        return await importApiCard(card, extensionName, extension_settings, importStats, 'botify', getBotifyBot, (raw) => transformFullBotifyBot(raw));
+    }
+
+    if (card.isJoyland || card.service === 'joyland' || card.sourceService === 'joyland') {
+        console.log('[Bot Browser] Importing Joyland.ai card:', card.name);
+        // No separate API call needed — use card data directly
+        const transformed = transformFullJoylandBot(card);
+        return await importApiCard({ ...card, ...transformed }, extensionName, extension_settings, importStats, 'joyland', null, null);
+    }
+
+    if (card.isSpicychat || card.service === 'spicychat' || card.sourceService === 'spicychat') {
+        console.log('[Bot Browser] Importing SpicyChat card:', card.name);
+        const transformed = transformFullSpicychatCharacter(card);
+        return await importApiCard({ ...card, ...transformed }, extensionName, extension_settings, importStats, 'spicychat', null, null);
+    }
+
+    if (card.isTalkie || card.service === 'talkie' || card.sourceService === 'talkie') {
+        console.log('[Bot Browser] Importing Talkie AI card:', card.name);
+        return await importApiCard(card, extensionName, extension_settings, importStats, 'talkie', getTalkieCharacter, (raw) => transformFullTalkieCharacter(raw));
     }
 
     // Determine which URL to use based on service
@@ -1392,4 +1454,141 @@ async function createCharacterPNG(imageBlob, base64Data) {
 
     // Convert back to Blob
     return new Blob([pngWithData], { type: 'image/png' });
+}
+
+// Helper: build V2 card data from a card object with standard field names
+function buildV2CardData(card, serviceExtensions = {}) {
+    return {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        data: {
+            name: card.name || '',
+            description: card.description || '',
+            personality: card.personality || '',
+            scenario: card.scenario || '',
+            first_mes: card.first_mes || card.first_message || '',
+            mes_example: card.mes_example || '',
+            creator_notes: card.creator_notes || '',
+            system_prompt: card.system_prompt || '',
+            post_history_instructions: card.post_history_instructions || '',
+            creator: card.creator || '',
+            character_version: card.character_version || '1.0',
+            tags: card.tags || [],
+            alternate_greetings: card.alternate_greetings || [],
+            character_book: card.character_book || undefined,
+            extensions: {
+                talkativeness: '0.5',
+                fav: false,
+                world: '',
+                depth_prompt: { prompt: '', depth: 4 },
+                ...serviceExtensions
+            }
+        }
+    };
+}
+
+// Import CharaVault card - download the actual PNG card file
+async function importCharaVaultCard(card, extensionName, extension_settings, importStats) {
+    const cvFolder = card._folder || card.folder;
+    const cvFile = card._file || card.file;
+
+    // CharaVault cards are actual PNG files with embedded character data
+    const downloadUrl = card.download_url || (cvFolder && cvFile ? getCharavaultDownloadUrl(cvFolder, cvFile) : null);
+
+    if (!downloadUrl) {
+        // Fall back to API data if no download URL
+        if (cvFolder && cvFile) {
+            try {
+                const detail = await getCharavaultCard(cvFolder, cvFile);
+                const fullCard = { ...card, ...detail };
+                const characterData = buildV2CardData(fullCard, { charavault: { folder: cvFolder, file: cvFile } });
+                let imageBlob = await fetchImageWithProxyChain(card.avatar_url || card.image_url);
+                if (!imageBlob) {
+                    const defaultAvatarResponse = await fetch(default_avatar);
+                    imageBlob = await defaultAvatarResponse.blob();
+                }
+                const jsonString = JSON.stringify(characterData);
+                const base64Data = btoa(unescape(encodeURIComponent(jsonString)));
+                const pngBlob = await createCharacterPNG(imageBlob, base64Data);
+                const fileName = card.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.png';
+                const file = new File([pngBlob], fileName, { type: 'image/png' });
+                await importCharacterFile(file);
+                toastr.success(`${card.name} imported successfully!`, '', { timeOut: 2000 });
+                return trackImport(extensionName, extension_settings, importStats, card, 'character');
+            } catch (error) {
+                console.error('[Bot Browser] Failed to fetch CharaVault card detail:', error);
+                throw error;
+            }
+        }
+        throw new Error('No download URL for CharaVault card');
+    }
+
+    console.log('[Bot Browser] Downloading CharaVault PNG:', downloadUrl);
+
+    // Try to download the PNG directly (it has embedded character data)
+    let imageBlob = await fetchImageWithProxyChain(downloadUrl);
+
+    if (imageBlob && imageBlob.size > 5000) {
+        console.log('[Bot Browser] ✓ Downloaded CharaVault PNG with embedded data');
+        const fileName = card.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.png';
+        const file = new File([imageBlob], fileName, { type: 'image/png' });
+        await importCharacterFile(file);
+        toastr.success(`${card.name} imported successfully!`, '', { timeOut: 2000 });
+        return trackImport(extensionName, extension_settings, importStats, card, 'character');
+    }
+
+    // Fallback: build V2 from API data
+    console.log('[Bot Browser] PNG download failed, falling back to API data');
+    const characterData = buildV2CardData(card, { charavault: { folder: cvFolder, file: cvFile } });
+    let avatarBlob = await fetchImageWithProxyChain(card.avatar_url || card.image_url);
+    if (!avatarBlob) {
+        const defaultAvatarResponse = await fetch(default_avatar);
+        avatarBlob = await defaultAvatarResponse.blob();
+    }
+    const jsonString = JSON.stringify(characterData);
+    const base64Data = btoa(unescape(encodeURIComponent(jsonString)));
+    const pngBlob = await createCharacterPNG(avatarBlob, base64Data);
+    const fileName = card.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.png';
+    const file = new File([pngBlob], fileName, { type: 'image/png' });
+    await importCharacterFile(file);
+    toastr.success(`${card.name} imported successfully!`, '', { timeOut: 2000 });
+    return trackImport(extensionName, extension_settings, importStats, card, 'character');
+}
+
+// Generic import for API-based services (Sakura, Saucepan, CrushOn, Harpy)
+// Fetches full data if not already available, builds V2 card, embeds in PNG
+async function importApiCard(card, extensionName, extension_settings, importStats, serviceName, getFn, transformFn) {
+    let fullCard = card;
+
+    // Fetch full data if needed
+    if ((!card.first_mes && !card.first_message) && card.id) {
+        try {
+            console.log(`[Bot Browser] Fetching full ${serviceName} character data for import:`, card.id);
+            const rawData = await getFn(card.id);
+            fullCard = { ...card, ...transformFn(rawData) };
+            console.log(`[Bot Browser] Full ${serviceName} data fetched:`, fullCard.name);
+        } catch (error) {
+            console.error(`[Bot Browser] Failed to fetch full ${serviceName} data:`, error);
+        }
+    }
+
+    const characterData = buildV2CardData(fullCard, { [serviceName]: { id: card.id } });
+
+    let imageBlob = await fetchImageWithProxyChain(fullCard.avatar_url || card.avatar_url || card.image_url);
+    if (!imageBlob) {
+        console.log(`[Bot Browser] Using default avatar for ${serviceName} card`);
+        const defaultAvatarResponse = await fetch(default_avatar);
+        imageBlob = await defaultAvatarResponse.blob();
+    }
+
+    const jsonString = JSON.stringify(characterData);
+    const base64Data = btoa(unescape(encodeURIComponent(jsonString)));
+    const pngBlob = await createCharacterPNG(imageBlob, base64Data);
+    const fileName = fullCard.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.png';
+    const file = new File([pngBlob], fileName, { type: 'image/png' });
+
+    await importCharacterFile(file);
+    toastr.success(`${fullCard.name} imported successfully!`, '', { timeOut: 2000 });
+    console.log(`[Bot Browser] ${serviceName} card imported successfully`);
+    return trackImport(extensionName, extension_settings, importStats, fullCard, 'character');
 }

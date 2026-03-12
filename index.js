@@ -5,7 +5,7 @@ import { importWorldInfo, updateWorldInfoList } from '/scripts/world-info.js';
 // Import modules
 import { loadImportStats, saveImportStats, loadRecentlyViewed, loadPersistentSearch, loadBookmarks, removeBookmark, clearImportedCards } from './modules/storage/storage.js';
 import { getTimeAgo } from './modules/storage/stats.js';
-import { loadServiceIndex, initializeServiceCache, clearQuillgenCache } from './modules/services/cache.js';
+import { loadServiceIndex, initializeServiceCache } from './modules/services/cache.js';
 import { getRandomCard } from './modules/services/cards.js';
 import { importCardToSillyTavern, importCharacterFile } from './modules/services/import.js';
 import { showCardDetail, closeDetailModal, showImageLightbox } from './modules/modals/detail.js';
@@ -35,11 +35,60 @@ import {
 import { initUpdateChecker } from './modules/services/updateChecker.js';
 import { searchRisuRealm, transformRisuRealmCard, resetRisuRealmState, risuRealmApiState, fetchRisuRealmTrending } from './modules/services/risuRealmApi.js';
 import { searchChubCards, transformChubCard } from './modules/services/chubApi.js';
+import {
+    setChubToken, isChubLoggedIn, validateChubToken, getChubToken,
+    fetchFavoriteCards, fetchFavoriteIds, toggleFavorite, getChubFavoriteIds,
+    fetchTimeline, resetTimelineState, chubTimelineState,
+    toggleFollow, fetchFollowsList, getChubFollowsList,
+    fetchGalleryImages, rateCharacter, fetchAccountInfo
+} from './modules/services/chubAccount.js';
 import { fetchWyvernCreatorCards, searchWyvernCharacters, transformWyvernCard } from './modules/services/wyvernApi.js';
 import { searchCharacterTavern } from './modules/services/characterTavernApi.js';
+import {
+    searchCharavaultCards, transformCharavaultCard, charavaultApiState, resetCharavaultState
+} from './modules/services/charavaultApi.js';
+import {
+    searchSakuraCharacters, transformSakuraCard, sakuraApiState, resetSakuraState,
+    getSakuraCreatorCharacters
+} from './modules/services/sakuraApi.js';
+import {
+    searchSaucepanCompanions, transformSaucepanCard, saucepanApiState, resetSaucepanState,
+    getSaucepanUserCompanions
+} from './modules/services/saucepanApi.js';
+import {
+    browseCrushonCharacters, searchCrushonCharacters, transformCrushonCard,
+    crushonApiState, resetCrushonState, getCrushonUserCharacters
+} from './modules/services/crushonApi.js';
+import {
+    searchHarpyCharacters, transformHarpyCard, harpyApiState, resetHarpyState, setHarpyUserToken
+} from './modules/services/harpyApi.js';
+import {
+    searchBotify, transformBotifyCard, botifyApiState, resetBotifyState, getBotifyBot, transformFullBotifyBot
+} from './modules/services/botifyApi.js';
+import {
+    getJoylandHomepage, browseJoylandBots, searchJoylandBots,
+    transformJoylandCard, transformJoylandHomepageCard, joylandApiState, resetJoylandState, transformFullJoylandBot,
+    JOYLAND_SORT_TYPES, JOYLAND_CATEGORIES
+} from './modules/services/joylandApi.js';
+import {
+    searchSpicychat, transformSpicychatCard, spicychatApiState, resetSpicychatState, transformFullSpicychatCharacter,
+    SPICYCHAT_SORT_OPTIONS
+} from './modules/services/spicychatApi.js';
+import {
+    browseTalkieCharacters, searchTalkieCharacters, transformTalkieCard, talkieApiState, resetTalkieState,
+    getTalkieCharacter, transformFullTalkieCharacter
+} from './modules/services/talkieApi.js';
+import {
+    authState, isLoggedIn, getDisplayName, initAuthFromSettings,
+    applyServiceLogin, clearServiceAuth,
+    loginSaucepan, loginHarpy,
+    verifyCharaVaultCookie, verifySakuraToken, verifyCrushonCookie,
+    fetchCharaVaultFavorites, fetchSakuraFavorites, fetchCrushonLikes,
+    toggleCharaVaultFavorite, toggleSakuraFavorite, toggleSaucepanFavorite
+} from './modules/services/authManager.js';
 
 // Extension version (from manifest.json)
-const EXTENSION_VERSION = '1.1.5';
+const EXTENSION_VERSION = '2.0';
 
 // Extension name and settings
 const extensionName = 'BotBrowser';
@@ -169,14 +218,26 @@ const defaultSettings = {
     hideNsfw: false,
     trackStats: true,
     tagBlocklist: [],
-    quillgenApiKey: '',
     useChubLiveApi: true,
+    chubToken: '',
     useCharacterTavernLiveApi: true,
     useRisuRealmLiveApi: true,
     useMlpchagLiveApi: true,
     useWyvernLiveApi: true,
     autoClearFilters: true,
     randomServices: getDefaultRandomServiceSettings(),
+    // Auth tokens for 5 new services
+    saucepanToken: '',
+    saucepanDisplayName: '',
+    harpyToken: '',
+    harpyUserId: '',
+    harpyDisplayName: '',
+    charavaultCookie: '',
+    charavaultDisplayName: '',
+    sakuraToken: '',
+    sakuraDisplayName: '',
+    crushonCookie: '',
+    crushonDisplayName: '',
 };
 
 // Stats storage
@@ -212,6 +273,39 @@ function loadSettings() {
             }
         }
     }
+
+    // Initialize Chub token from saved settings
+    const savedChubToken = extension_settings[extensionName].chubToken;
+    if (savedChubToken) {
+        setChubToken(savedChubToken);
+        // Pre-fetch favorites and follows in background
+        fetchFavoriteIds().catch(() => {});
+        fetchFollowsList().catch(() => {});
+        // Show auth-only buttons after DOM is ready
+        requestAnimationFrame(() => {
+            document.querySelectorAll('.bot-browser-chub-auth-only').forEach(el => {
+                el.style.display = '';
+            });
+        });
+    }
+
+    // Initialize auth for 5 new services
+    const settings = extension_settings[extensionName];
+    initAuthFromSettings(settings, setHarpyUserToken);
+
+    // Show auth-only source buttons after DOM is ready
+    requestAnimationFrame(() => {
+        const authClasses = [
+            ['charavault', '.bb-charavault-auth-only'],
+            ['sakura', '.bb-sakura-auth-only'],
+            ['crushon', '.bb-crushon-auth-only'],
+        ];
+        for (const [service, cls] of authClasses) {
+            if (isLoggedIn(service)) {
+                document.querySelectorAll(cls).forEach(el => { el.style.display = ''; });
+            }
+        }
+    });
 }
 
 // Apply blur setting to all card images
@@ -448,6 +542,28 @@ async function showCardDetailWrapper(card, save = true, isRandom = false) {
                     toastr.error(`Failed to load cards by ${escapeHTML(creator)}: ${error.message}`);
                     state.isCreatorPage = false;
                     // Fall through to local filter
+                }
+            }
+
+            // Saucepan creator search
+            const isSaucepan = card?.isSaucepan || card?.service === 'saucepan';
+            if (isSaucepan && creator) {
+                try {
+                    toastr.info(`Loading cards by ${escapeHTML(creator)}...`, '', { timeOut: 2000 });
+                    const result = await getSaucepanUserCompanions(creator);
+                    const creatorCards = result.characters.map(transformSaucepanCard);
+                    if (creatorCards.length > 0) {
+                        state.isCreatorPage = true;
+                        await createCardBrowser(`Cards by ${creator}`, creatorCards, state, extensionName, extension_settings, showCardDetailWrapper);
+                        toastr.success(`Found ${creatorCards.length} cards by ${escapeHTML(creator)}`);
+                    } else {
+                        toastr.info(`No cards found by ${escapeHTML(creator)}`);
+                        state.isCreatorPage = false;
+                    }
+                    return;
+                } catch (error) {
+                    console.error('[Bot Browser] Failed to load Saucepan creator cards:', error);
+                    state.isCreatorPage = false;
                 }
             }
 
@@ -1343,6 +1459,32 @@ function setupSourceButtons(menu) {
                     toastr.info('JanitorAI excluded (blocked by anti-bot protection)', '', { timeOut: 3000 });
 
                     console.log(`[Bot Browser] Loaded ${cards.length} cards from all sources (${staticServices.length} archives + ${liveApiPromises.length} live APIs)`);
+                } else if (sourceName === 'chub_favorites') {
+                    if (!isChubLoggedIn()) {
+                        toastr.error('Chub API token required. Go to Settings → API to add your token.', 'Not Logged In', { timeOut: 4000 });
+                        return;
+                    }
+                    toastr.info('Loading your Chub favorites...', '', { timeOut: 2000 });
+
+                    const result = await fetchFavoriteCards(1, 96);
+                    cards = result.nodes.map(transformChubCard);
+                    cards.forEach(c => { c._isFavorited = true; });
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} Chub favorite cards`);
+                } else if (sourceName === 'chub_timeline') {
+                    if (!isChubLoggedIn()) {
+                        toastr.error('Chub API token required. Go to Settings → API to add your token.', 'Not Logged In', { timeOut: 4000 });
+                        return;
+                    }
+                    toastr.info('Loading your timeline...', '', { timeOut: 2000 });
+                    resetTimelineState();
+
+                    const result = await fetchTimeline();
+                    cards = result.nodes.map(transformChubCard);
+                    chubTimelineState.cursor = result.cursor;
+                    chubTimelineState.hasMore = result.hasMore;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} timeline cards`);
                 } else if (sourceName === 'my_imports') {
                     // Load imported cards from local storage
                     toastr.info('Loading your imports...', '', { timeOut: 2000 });
@@ -1511,6 +1653,203 @@ function setupSourceButtons(menu) {
                     pygmalionApiState.totalItems = result.totalItems;
 
                     console.log(`[Bot Browser] Loaded ${cards.length} Pygmalion cards, hasMore: ${result.hasMore}, total: ${result.totalItems}`);
+                } else if (sourceName === 'charavault') {
+                    toastr.info('Loading CharaVault...', '', { timeOut: 2000 });
+                    resetCharavaultState();
+
+                    const persistedSearch = extension_settings[extensionName].autoClearFilters !== false ? null : loadPersistentSearch(extensionName, extension_settings, sourceName);
+                    const sortBy = persistedSearch?.sortBy || extension_settings[extensionName].defaultSortBy || 'relevance';
+                    const cvSort = sortBy === 'date_desc' ? 'newest' : sortBy === 'tokens_desc' ? 'top_rated' : 'most_downloaded';
+
+                    const result = await searchCharavaultCards({
+                        search: persistedSearch?.filters?.search || '',
+                        sort: cvSort,
+                        offset: 0,
+                        limit: 24
+                    });
+
+                    cards = result.characters.map(transformCharavaultCard);
+                    charavaultApiState.offset = result.nextOffset;
+                    charavaultApiState.hasMore = result.hasMore;
+                    charavaultApiState.total = result.total;
+                    charavaultApiState.lastSearch = persistedSearch?.filters?.search || '';
+                    charavaultApiState.lastSort = cvSort;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} CharaVault cards (${result.total} total), hasMore: ${result.hasMore}`);
+                } else if (sourceName === 'sakura') {
+                    toastr.info('Loading Sakura.fm...', '', { timeOut: 2000 });
+                    resetSakuraState();
+
+                    const persistedSearch = extension_settings[extensionName].autoClearFilters !== false ? null : loadPersistentSearch(extensionName, extension_settings, sourceName);
+                    const sortBy = persistedSearch?.sortBy || extension_settings[extensionName].defaultSortBy || 'relevance';
+                    const sakuraSort = sortBy === 'date_desc' ? 'created-recently' : 'message-count';
+
+                    const result = await searchSakuraCharacters({
+                        search: persistedSearch?.filters?.search || '',
+                        sortType: sakuraSort,
+                        offset: 0,
+                        limit: 24,
+                        allowNsfw: !extension_settings[extensionName].hideNsfw
+                    });
+
+                    cards = result.characters.map(transformSakuraCard);
+                    sakuraApiState.offset = result.characters.length;
+                    sakuraApiState.hasMore = result.hasMore;
+                    sakuraApiState.lastSearch = persistedSearch?.filters?.search || '';
+                    sakuraApiState.lastSort = sakuraSort;
+                    sakuraApiState.lastNsfw = !extension_settings[extensionName].hideNsfw;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} Sakura.fm cards, hasMore: ${result.hasMore}`);
+                } else if (sourceName === 'saucepan') {
+                    toastr.info('Loading Saucepan.ai...', '', { timeOut: 2000 });
+                    resetSaucepanState();
+
+                    const persistedSearch = extension_settings[extensionName].autoClearFilters !== false ? null : loadPersistentSearch(extensionName, extension_settings, sourceName);
+                    const sortBy = persistedSearch?.sortBy || extension_settings[extensionName].defaultSortBy || 'relevance';
+                    const spSort = sortBy === 'date_desc' ? 'created' : 'popularity';
+
+                    const result = await searchSaucepanCompanions({
+                        search: persistedSearch?.filters?.search || '',
+                        sort: spSort,
+                        offset: 0,
+                        limit: 24,
+                        nsfw: !extension_settings[extensionName].hideNsfw
+                    });
+
+                    cards = result.characters.map(transformSaucepanCard);
+                    saucepanApiState.offset = result.characters.length;
+                    saucepanApiState.hasMore = result.hasMore;
+                    saucepanApiState.total = result.total;
+                    saucepanApiState.lastSearch = persistedSearch?.filters?.search || '';
+                    saucepanApiState.lastSort = spSort;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} Saucepan.ai cards (${result.total} total), hasMore: ${result.hasMore}`);
+                } else if (sourceName === 'crushon') {
+                    toastr.info('Loading CrushOn.AI...', '', { timeOut: 2000 });
+                    resetCrushonState();
+
+                    const persistedSearch = extension_settings[extensionName].autoClearFilters !== false ? null : loadPersistentSearch(extensionName, extension_settings, sourceName);
+                    const sortBy = persistedSearch?.sortBy || extension_settings[extensionName].defaultSortBy || 'relevance';
+                    const collectionKind = sortBy === 'date_desc' ? 'new' : 'popular';
+                    const allowNsfw = !extension_settings[extensionName].hideNsfw;
+
+                    const search = persistedSearch?.filters?.search || '';
+                    let result;
+                    if (search) {
+                        result = await searchCrushonCharacters({ query: search, nsfw: allowNsfw, count: 24 });
+                    } else {
+                        result = await browseCrushonCharacters({ collectionKind, nsfw: allowNsfw, count: 24 });
+                    }
+
+                    cards = result.characters.map(transformCrushonCard);
+                    crushonApiState.cursor = result.nextCursor;
+                    crushonApiState.hasMore = result.hasMore;
+                    crushonApiState.lastCollectionKind = collectionKind;
+                    crushonApiState.lastNsfw = allowNsfw;
+                    crushonApiState.lastSearch = search;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} CrushOn.AI cards, hasMore: ${result.hasMore}`);
+                } else if (sourceName === 'harpy') {
+                    toastr.info('Loading Harpy.chat...', '', { timeOut: 2000 });
+                    resetHarpyState();
+
+                    const persistedSearch = extension_settings[extensionName].autoClearFilters !== false ? null : loadPersistentSearch(extensionName, extension_settings, sourceName);
+                    const sortBy = persistedSearch?.sortBy || extension_settings[extensionName].defaultSortBy || 'relevance';
+                    const harpySort = sortBy === 'date_desc' ? 'created_at.desc' : 'total_interactions.desc.nullslast';
+
+                    const result = await searchHarpyCharacters({
+                        search: persistedSearch?.filters?.search || '',
+                        sort: harpySort,
+                        offset: 0,
+                        limit: 24
+                    });
+
+                    cards = result.characters.map(transformHarpyCard);
+                    harpyApiState.offset = result.characters.length;
+                    harpyApiState.hasMore = result.hasMore;
+                    harpyApiState.total = result.total;
+                    harpyApiState.lastSearch = persistedSearch?.filters?.search || '';
+                    harpyApiState.lastSort = harpySort;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} Harpy.chat cards (${result.total} total), hasMore: ${result.hasMore}`);
+                } else if (sourceName === 'botify') {
+                    toastr.info('Loading Botify.ai...', '', { timeOut: 2000 });
+                    resetBotifyState();
+
+                    const result = await searchBotify({ sort: 'exploreSort:desc', page: 1 });
+                    cards = result.characters.map(transformBotifyCard);
+                    botifyApiState.page = 1;
+                    botifyApiState.hasMore = result.hasMore;
+                    botifyApiState.total = result.total;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} Botify.ai cards (${result.total} total)`);
+                } else if (sourceName === 'joyland') {
+                    toastr.info('Loading Joyland.ai...', '', { timeOut: 2000 });
+                    resetJoylandState();
+
+                    // Use homepage endpoint (no rate-limiting) as primary source
+                    const result = await getJoylandHomepage();
+                    cards = result.characters.map(transformJoylandHomepageCard);
+                    joylandApiState.hasMore = false;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} Joyland.ai cards (homepage)`);
+                } else if (sourceName === 'spicychat') {
+                    toastr.info('Loading SpicyChat.ai...', '', { timeOut: 2000 });
+                    resetSpicychatState();
+
+                    const hideNsfw = extension_settings[extensionName].hideNsfw !== false;
+                    const result = await searchSpicychat({ sort: SPICYCHAT_SORT_OPTIONS.TRENDING, filterNsfw: hideNsfw, page: 1 });
+                    cards = result.characters.map(transformSpicychatCard);
+                    spicychatApiState.page = 1;
+                    spicychatApiState.hasMore = result.hasMore;
+                    spicychatApiState.total = result.total;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} SpicyChat cards (${result.total} total)`);
+                } else if (sourceName === 'talkie') {
+                    const talkieToken = extension_settings[extensionName]?.talkieToken;
+                    if (!talkieToken) {
+                        toastr.warning('Add your Talkie JWT token in Settings → API to browse Talkie AI.', 'Token Required');
+                        return;
+                    }
+                    window.__BB_TALKIE_TOKEN = talkieToken;
+
+                    toastr.info('Loading Talkie AI...', '', { timeOut: 2000 });
+                    resetTalkieState();
+
+                    const result = await browseTalkieCharacters({ categoryId: 1, count: 24 });
+                    cards = result.characters.map(transformTalkieCard);
+                    talkieApiState.cursor = result.cursor;
+                    talkieApiState.hasMore = result.hasMore;
+
+                    console.log(`[Bot Browser] Loaded ${cards.length} Talkie AI cards`);
+                } else if (sourceName === 'charavault_favorites') {
+                    if (!isLoggedIn('charavault')) {
+                        toastr.warning('Add your CharaVault cookie in Settings → API to access favorites.', 'Not logged in');
+                        return;
+                    }
+                    toastr.info('Loading CharaVault Favorites...', '', { timeOut: 2000 });
+                    const favsData = await fetchCharaVaultFavorites({ limit: 100 });
+                    const favItems = favsData.results || favsData.favorites || (Array.isArray(favsData) ? favsData : []);
+                    cards = favItems.map(transformCharavaultCard);
+                    console.log(`[Bot Browser] Loaded ${cards.length} CharaVault favorites`);
+                } else if (sourceName === 'sakura_favorites') {
+                    if (!isLoggedIn('sakura')) {
+                        toastr.warning('Add your Sakura.fm token in Settings → API to access favorites.', 'Not logged in');
+                        return;
+                    }
+                    toastr.info('Loading Sakura Favorites...', '', { timeOut: 2000 });
+                    const sakFavsData = await fetchSakuraFavorites(authState.sakura.token, { limit: 100 });
+                    cards = (sakFavsData.characters || []).map(transformSakuraCard);
+                    console.log(`[Bot Browser] Loaded ${cards.length} Sakura favorites`);
+                } else if (sourceName === 'crushon_favorites') {
+                    if (!isLoggedIn('crushon')) {
+                        toastr.warning('Add your CrushOn cookie in Settings → API to access your likes.', 'Not logged in');
+                        return;
+                    }
+                    toastr.info('Loading CrushOn Likes...', '', { timeOut: 2000 });
+                    const crushLikes = await fetchCrushonLikes();
+                    cards = (crushLikes || []).map(transformCrushonCard);
+                    console.log(`[Bot Browser] Loaded ${cards.length} CrushOn liked characters`);
                 } else {
                     toastr.info(`Loading ${sourceName}...`, '', { timeOut: 2000 });
 
@@ -1780,23 +2119,555 @@ async function getRandomCardFromSameService() {
     }
 }
 
-// Open standalone browser in new tab
+const BOT_BROWSER_RESTORE_BAR_POSITION_KEY = 'botbrowser_restore_bar_position_v1';
+
+function loadStandaloneRestoreBarPosition() {
+    try {
+        const raw = localStorage.getItem(BOT_BROWSER_RESTORE_BAR_POSITION_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+
+        const left = Number(parsed.left);
+        const top = Number(parsed.top);
+        if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+
+        return { left, top };
+    } catch {
+        return null;
+    }
+}
+
+function saveStandaloneRestoreBarPosition(left, top) {
+    try {
+        localStorage.setItem(BOT_BROWSER_RESTORE_BAR_POSITION_KEY, JSON.stringify({ left, top }));
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+function clampStandaloneRestoreBarPosition(restoreBar, left, top) {
+    const margin = 8;
+    const width = restoreBar.offsetWidth || 260;
+    const height = restoreBar.offsetHeight || 42;
+    const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - height - margin);
+
+    return {
+        left: Math.min(Math.max(left, margin), maxLeft),
+        top: Math.min(Math.max(top, margin), maxTop),
+    };
+}
+
+// Open standalone browser in iframe overlay
 async function openStandaloneBrowser() {
     try {
-        // Get CSRF token for API calls
-        const csrfResponse = await fetch('/csrf-token');
-        let csrfToken = '';
-        if (csrfResponse.ok) {
-            const data = await csrfResponse.json();
-            csrfToken = data.token || '';
+        const existingControls = window.__botBrowserStandaloneControls;
+        if (existingControls?.restore) {
+            existingControls.restore();
+            return;
         }
 
         // Build URL relative to this module so it works even if the extension folder is nested.
+        // The standalone iframe can read fresh request headers from the live SillyTavern context,
+        // so passing a query-string CSRF token here only creates a stale-token failure mode.
         const url = new URL('browser.html', import.meta.url);
-        if (csrfToken) url.searchParams.set('csrf', csrfToken);
 
-        window.open(url.toString(), '_blank');
-        console.log('[Bot Browser] Opened standalone browser in new tab');
+        // Create fullscreen overlay container
+        const overlay = document.createElement('div');
+        overlay.id = 'bot-browser-iframe-overlay';
+        overlay.setAttribute('data-bot-browser-overlay', 'true');
+        overlay.style.cssText = `
+            position: fixed !important;
+            inset: 0 !important;
+            z-index: 10000 !important;
+            background: rgb(10, 10, 10) !important;
+            display: flex !important;
+            flex-direction: column !important;
+            overflow: hidden !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            visibility: visible !important;
+            opacity: 0 !important;
+            pointer-events: auto !important;
+            transform: translateY(18px) scale(0.995) !important;
+            transition: transform 220ms ease, opacity 220ms ease, visibility 220ms ease !important;
+        `;
+
+        // Block pointer events on the rest of the page
+        document.body.style.pointerEvents = 'none';
+
+        // Add back button at the top
+        const backBar = document.createElement('div');
+        backBar.style.cssText = `
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 6px 10px;
+            min-height: 38px;
+            background: rgba(0, 0, 0, 0.5);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            flex-shrink: 0;
+            pointer-events: auto !important;
+        `;
+        backBar.innerHTML = `
+            <div style="display:flex; align-items:center; gap:8px; min-width:0; flex:1;">
+                <button id="bot-browser-iframe-back" style="
+                    background: rgba(255, 255, 255, 0.1);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    color: white;
+                    padding: 5px 10px;
+                    min-height: 28px;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    line-height: 1;
+                    white-space: nowrap;
+                    transition: all 0.2s;
+                " onmouseover="this.style.background='rgba(255, 255, 255, 0.15)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.1)'">
+                    <i class="fa-solid fa-arrow-left" style="font-size: 11px;"></i>
+                    <span id="bot-browser-iframe-back-label">Back to SillyTavern</span>
+                </button>
+                <span id="bot-browser-iframe-title" style="color: rgba(255, 255, 255, 0.7); font-size: 12px; line-height: 1.1; white-space: nowrap;">Bot Browser (Standalone Mode)</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+                <button id="bot-browser-iframe-minimize" style="
+                    background: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.14);
+                    color: rgba(255, 255, 255, 0.92);
+                    padding: 5px 9px;
+                    min-height: 28px;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    line-height: 1;
+                    white-space: nowrap;
+                    transition: all 0.2s;
+                " onmouseover="this.style.background='rgba(255, 255, 255, 0.14)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.08)'">
+                    <i class="fa-solid fa-chevron-up" style="font-size: 11px;"></i>
+                    <span id="bot-browser-iframe-minimize-label">Hide</span>
+                </button>
+                <button id="bot-browser-iframe-classic" style="
+                    background: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.14);
+                    color: rgba(255, 255, 255, 0.92);
+                    padding: 5px 9px;
+                    min-height: 28px;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    line-height: 1;
+                    white-space: nowrap;
+                    transition: all 0.2s;
+                " onmouseover="this.style.background='rgba(255, 255, 255, 0.14)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.08)'">
+                    <i class="fa-solid fa-layer-group" style="font-size: 11px;"></i>
+                    <span id="bot-browser-iframe-classic-label">Classic UI</span>
+                </button>
+            </div>
+        `;
+
+        const restoreBar = document.createElement('div');
+        restoreBar.id = 'bot-browser-iframe-restore';
+        restoreBar.style.cssText = `
+            position: fixed !important;
+            top: 8px !important;
+            left: 8px !important;
+            transform: translateY(-12px) !important;
+            z-index: 10001 !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 8px !important;
+            padding: 6px 8px !important;
+            border-radius: 999px !important;
+            border: 1px solid rgba(255, 255, 255, 0.16) !important;
+            background: rgba(12, 12, 12, 0.9) !important;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35) !important;
+            backdrop-filter: blur(10px) !important;
+            opacity: 0 !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+            touch-action: manipulation !important;
+            user-select: none !important;
+            cursor: default !important;
+            transition: transform 220ms ease, opacity 220ms ease, visibility 220ms ease !important;
+        `;
+        restoreBar.innerHTML = `
+            <div id="bot-browser-iframe-restore-drag" style="
+                width: 30px;
+                height: 30px;
+                border-radius: 999px;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                background: rgba(255, 255, 255, 0.04);
+                color: rgba(255, 255, 255, 0.78);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: grab;
+                touch-action: none;
+                flex-shrink: 0;
+                transition: all 0.2s;
+            " title="Drag to move" onmouseover="this.style.background='rgba(255, 255, 255, 0.08)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.04)'">
+                <i class="fa-solid fa-grip-lines" style="font-size: 11px;"></i>
+            </div>
+            <button id="bot-browser-iframe-restore-main" style="
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                color: white;
+                padding: 6px 12px;
+                min-height: 30px;
+                border-radius: 999px;
+                cursor: pointer;
+                font-size: 12px;
+                display: flex;
+                align-items: center;
+                gap: 7px;
+                white-space: nowrap;
+                transition: all 0.2s;
+            " onmouseover="this.style.background='rgba(255, 255, 255, 0.14)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.08)'">
+                <i class="fa-solid fa-window-restore" style="font-size: 11px;"></i>
+                <span id="bot-browser-iframe-restore-label">Return to Bot Browser</span>
+            </button>
+            <button id="bot-browser-iframe-restore-close" style="
+                background: transparent;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                color: rgba(255, 255, 255, 0.84);
+                width: 30px;
+                height: 30px;
+                border-radius: 999px;
+                cursor: pointer;
+                font-size: 12px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.2s;
+            " onmouseover="this.style.background='rgba(255, 255, 255, 0.08)'" onmouseout="this.style.background='transparent'">
+                <i class="fa-solid fa-xmark" style="font-size: 12px;"></i>
+            </button>
+        `;
+
+        // Create iframe
+        const iframe = document.createElement('iframe');
+        iframe.id = 'bot-browser-iframe';
+        iframe.src = url.toString();
+        iframe.style.cssText = `
+            width: 100%;
+            height: 100%;
+            border: none;
+            flex: 1;
+            pointer-events: auto !important;
+        `;
+
+        // Assemble overlay
+        overlay.appendChild(backBar);
+        overlay.appendChild(iframe);
+        document.body.appendChild(overlay);
+        document.body.appendChild(restoreBar);
+
+        // Auto-focus iframe when loaded
+        iframe.addEventListener('load', () => {
+            iframe.focus();
+        });
+
+        let isMinimized = false;
+        let isClosed = false;
+        let hasCustomRestoreBarPosition = false;
+        let suppressRestoreBarClickUntil = 0;
+        let restoreBarDragState = null;
+        const restoreBarDragHandle = document.getElementById('bot-browser-iframe-restore-drag');
+
+        const setRestoreBarPosition = (left, top, { persist = true, markCustom = true } = {}) => {
+            const clamped = clampStandaloneRestoreBarPosition(restoreBar, left, top);
+            restoreBar.style.left = `${clamped.left}px`;
+            restoreBar.style.top = `${clamped.top}px`;
+
+            if (markCustom) {
+                hasCustomRestoreBarPosition = true;
+            }
+
+            if (persist && hasCustomRestoreBarPosition) {
+                saveStandaloneRestoreBarPosition(clamped.left, clamped.top);
+            }
+        };
+
+        const centerRestoreBar = () => {
+            const width = restoreBar.offsetWidth || 260;
+            setRestoreBarPosition((window.innerWidth - width) / 2, 8, { persist: false, markCustom: false });
+        };
+
+        const savedRestoreBarPosition = loadStandaloneRestoreBarPosition();
+        if (savedRestoreBarPosition) {
+            hasCustomRestoreBarPosition = true;
+            setRestoreBarPosition(savedRestoreBarPosition.left, savedRestoreBarPosition.top, { persist: false, markCustom: true });
+        } else {
+            centerRestoreBar();
+        }
+
+        const updateStandaloneBackBarLayout = () => {
+            const isCompact = window.matchMedia('(max-width: 700px)').matches;
+            const backButton = document.getElementById('bot-browser-iframe-back');
+            const backLabel = document.getElementById('bot-browser-iframe-back-label');
+            const title = document.getElementById('bot-browser-iframe-title');
+            const minimizeButton = document.getElementById('bot-browser-iframe-minimize');
+            const minimizeLabel = document.getElementById('bot-browser-iframe-minimize-label');
+            const classicButton = document.getElementById('bot-browser-iframe-classic');
+            const classicLabel = document.getElementById('bot-browser-iframe-classic-label');
+            const restoreLabel = document.getElementById('bot-browser-iframe-restore-label');
+
+            backBar.style.padding = isCompact ? '4px 8px' : '6px 10px';
+            backBar.style.minHeight = isCompact ? '32px' : '38px';
+            backBar.style.gap = isCompact ? '6px' : '8px';
+
+            if (backButton) {
+                backButton.style.padding = isCompact ? '4px 8px' : '5px 10px';
+                backButton.style.minHeight = isCompact ? '26px' : '28px';
+                backButton.style.fontSize = isCompact ? '11px' : '12px';
+                backButton.style.gap = isCompact ? '5px' : '6px';
+            }
+
+            if (backLabel) {
+                backLabel.textContent = isCompact ? 'Back' : 'Back to SillyTavern';
+            }
+
+            if (title) {
+                title.textContent = isCompact ? 'Standalone' : 'Bot Browser (Standalone Mode)';
+                title.style.fontSize = isCompact ? '11px' : '12px';
+            }
+
+            if (minimizeButton) {
+                minimizeButton.style.padding = isCompact ? '4px 8px' : '5px 9px';
+                minimizeButton.style.minHeight = isCompact ? '26px' : '28px';
+                minimizeButton.style.fontSize = isCompact ? '11px' : '12px';
+            }
+
+            if (minimizeLabel) {
+                minimizeLabel.textContent = isCompact ? 'Hide' : 'Hide Browser';
+            }
+
+            if (classicButton) {
+                classicButton.style.padding = isCompact ? '4px 8px' : '5px 9px';
+                classicButton.style.minHeight = isCompact ? '26px' : '28px';
+                classicButton.style.fontSize = isCompact ? '11px' : '12px';
+                classicButton.style.gap = isCompact ? '5px' : '6px';
+            }
+
+            if (classicLabel) {
+                classicLabel.textContent = isCompact ? 'Classic' : 'Classic UI';
+            }
+
+            if (restoreLabel) {
+                restoreLabel.textContent = isCompact ? 'Bot Browser' : 'Return to Bot Browser';
+            }
+
+            if (hasCustomRestoreBarPosition) {
+                const currentLeft = Number.parseFloat(restoreBar.style.left) || 8;
+                const currentTop = Number.parseFloat(restoreBar.style.top) || 8;
+                setRestoreBarPosition(currentLeft, currentTop, { persist: false, markCustom: true });
+            } else {
+                centerRestoreBar();
+            }
+        };
+
+        const showRestoreBar = () => {
+            restoreBar.style.visibility = 'visible';
+            restoreBar.style.pointerEvents = 'auto';
+            restoreBar.style.opacity = '1';
+            restoreBar.style.transform = 'translateY(0)';
+        };
+
+        const hideRestoreBar = () => {
+            restoreBar.style.opacity = '0';
+            restoreBar.style.pointerEvents = 'none';
+            restoreBar.style.transform = 'translateY(-12px)';
+            restoreBar.style.visibility = 'hidden';
+        };
+
+        const handleRestoreBarPointerMove = (event) => {
+            if (!restoreBarDragState || isClosed) return;
+
+            const deltaX = event.clientX - restoreBarDragState.startX;
+            const deltaY = event.clientY - restoreBarDragState.startY;
+
+            if (!restoreBarDragState.hasMoved && Math.hypot(deltaX, deltaY) >= 5) {
+                restoreBarDragState.hasMoved = true;
+                if (restoreBarDragHandle) {
+                    restoreBarDragHandle.style.cursor = 'grabbing';
+                }
+            }
+
+            if (!restoreBarDragState.hasMoved) return;
+
+            event.preventDefault();
+            setRestoreBarPosition(
+                restoreBarDragState.originLeft + deltaX,
+                restoreBarDragState.originTop + deltaY,
+                { persist: false, markCustom: true },
+            );
+        };
+
+        const finishRestoreBarDrag = () => {
+            if (!restoreBarDragState) return;
+
+            const didMove = restoreBarDragState.hasMoved;
+            restoreBarDragState = null;
+            if (restoreBarDragHandle) {
+                restoreBarDragHandle.style.cursor = 'grab';
+            }
+
+            if (didMove) {
+                const currentLeft = Number.parseFloat(restoreBar.style.left) || 8;
+                const currentTop = Number.parseFloat(restoreBar.style.top) || 8;
+                setRestoreBarPosition(currentLeft, currentTop, { persist: true, markCustom: true });
+                suppressRestoreBarClickUntil = Date.now() + 250;
+            }
+        };
+
+        restoreBar.addEventListener('pointerdown', (event) => {
+            if (isClosed || event.button !== 0) return;
+            if (!event.target.closest('#bot-browser-iframe-restore-drag')) return;
+
+            restoreBarDragState = {
+                pointerId: event.pointerId,
+                startX: event.clientX,
+                startY: event.clientY,
+                originLeft: Number.parseFloat(restoreBar.style.left) || 8,
+                originTop: Number.parseFloat(restoreBar.style.top) || 8,
+                hasMoved: false,
+            };
+
+            restoreBar.setPointerCapture(event.pointerId);
+        });
+
+        restoreBar.addEventListener('pointermove', handleRestoreBarPointerMove);
+        restoreBar.addEventListener('pointerup', (event) => {
+            if (restoreBarDragState?.pointerId === event.pointerId) {
+                finishRestoreBarDrag();
+            }
+        });
+        restoreBar.addEventListener('pointercancel', finishRestoreBarDrag);
+        restoreBar.addEventListener('lostpointercapture', finishRestoreBarDrag);
+        restoreBar.addEventListener('click', (event) => {
+            if (Date.now() < suppressRestoreBarClickUntil) {
+                event.preventDefault();
+                event.stopPropagation();
+                suppressRestoreBarClickUntil = 0;
+            }
+        }, true);
+
+        const restoreOverlay = () => {
+            if (isClosed) return;
+            isMinimized = false;
+            document.body.style.pointerEvents = 'none';
+            overlay.style.visibility = 'visible';
+            overlay.style.pointerEvents = 'auto';
+            overlay.style.opacity = '1';
+            overlay.style.transform = 'translateY(0) scale(1)';
+            hideRestoreBar();
+            setTimeout(() => iframe.focus(), 220);
+        };
+
+        const minimizeOverlay = () => {
+            if (isClosed) return;
+            isMinimized = true;
+            overlay.style.opacity = '0';
+            overlay.style.pointerEvents = 'none';
+            overlay.style.transform = 'translateY(calc(-100% - 16px)) scale(0.99)';
+            document.body.style.pointerEvents = '';
+            showRestoreBar();
+        };
+
+        updateStandaloneBackBarLayout();
+        requestAnimationFrame(() => {
+            if (isClosed) return;
+            overlay.style.opacity = '1';
+            overlay.style.transform = 'translateY(0) scale(1)';
+        });
+
+        // Watch for resize events
+        const resizeHandler = () => {
+            updateStandaloneBackBarLayout();
+        };
+        window.addEventListener('resize', resizeHandler);
+
+        // Watch for DOM changes that might hide/remove the overlay
+        const observer = new MutationObserver(() => {
+            if (!overlay.isConnected || isClosed) return;
+            if (!isMinimized) {
+                overlay.style.display = 'flex';
+                overlay.style.visibility = 'visible';
+                overlay.style.pointerEvents = 'auto';
+            }
+        });
+        observer.observe(overlay, { attributes: true, attributeFilter: ['style', 'class'] });
+
+        // Close function
+        const closeIframe = (afterClose) => {
+            if (isClosed) return;
+            isClosed = true;
+            observer.disconnect();
+            window.removeEventListener('resize', resizeHandler);
+            document.removeEventListener('keydown', escHandler);
+            document.body.style.pointerEvents = '';
+            finishRestoreBarDrag();
+            hideRestoreBar();
+            overlay.style.opacity = '0';
+            overlay.style.pointerEvents = 'none';
+            overlay.style.transform = isMinimized ? 'translateY(calc(-100% - 16px)) scale(0.99)' : 'translateY(18px) scale(0.995)';
+            setTimeout(() => {
+                overlay.remove();
+                restoreBar.remove();
+                if (typeof afterClose === 'function') {
+                    afterClose();
+                }
+            }, 220);
+            delete window.__botBrowserStandaloneControls;
+        };
+
+        const switchToClassicUi = () => {
+            closeIframe(() => {
+                createBotBrowserMenu();
+            });
+        };
+
+        // Back button handler
+        document.getElementById('bot-browser-iframe-back').addEventListener('click', closeIframe);
+        document.getElementById('bot-browser-iframe-minimize').addEventListener('click', minimizeOverlay);
+        document.getElementById('bot-browser-iframe-classic').addEventListener('click', switchToClassicUi);
+        document.getElementById('bot-browser-iframe-restore-main').addEventListener('click', restoreOverlay);
+        document.getElementById('bot-browser-iframe-restore-close').addEventListener('click', closeIframe);
+
+        // ESC key handler
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                if (isMinimized) {
+                    restoreOverlay();
+                    return;
+                }
+                closeIframe();
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+
+        window.__botBrowserStandaloneControls = {
+            restore: restoreOverlay,
+            minimize: minimizeOverlay,
+            close: closeIframe,
+        };
+
+        console.log('[Bot Browser] Opened standalone browser in iframe overlay');
     } catch (error) {
         console.error('[Bot Browser] Failed to open standalone browser:', error);
         toastr.error('Failed to open standalone browser');
@@ -1904,6 +2775,42 @@ function setupStandaloneImportBridge() {
         const msg = event.data;
         if (!msg) return;
 
+        // Theme bridge: allow the standalone iframe to mirror ST theme variables.
+        if (msg.type === 'botbrowser_theme_request' && msg.requestId) {
+            try {
+                const root = document.documentElement;
+                const cs = getComputedStyle(root);
+                const keys = [
+                    '--SmartThemeBodyColor',
+                    '--SmartThemeEmColor',
+                    '--SmartThemeUnderlineColor',
+                    '--SmartThemeQuoteColor',
+                    '--SmartThemeBlurTintColor',
+                    '--SmartThemeChatTintColor',
+                    '--SmartThemeBorderColor',
+                    '--SmartThemeShadowColor',
+                    '--SmartThemeBlurStrength',
+                    '--mainFontFamily',
+                    '--monoFontFamily',
+                    '--mainFontSize',
+                ];
+
+                const vars = {};
+                for (const k of keys) {
+                    const v = cs.getPropertyValue(k);
+                    if (v) vars[k] = v.trim();
+                }
+
+                event.source?.postMessage(
+                    { type: 'botbrowser_theme_response', requestId: msg.requestId, vars },
+                    event.origin,
+                );
+            } catch (e) {
+                console.warn('[Bot Browser] Theme bridge failed:', e);
+            }
+            return;
+        }
+
         if (msg.type === 'botbrowser_open_character') {
             await openCharacterInSillyTavern(msg);
             return;
@@ -1983,6 +2890,79 @@ function setupStandaloneImportBridge() {
 // Show settings modal
 function showSettingsModal() {
     const settings = extension_settings[extensionName];
+
+    // Build auth section HTML for login-form services (Saucepan, Harpy)
+    function buildLoginAuthSection(svc) {
+        const loggedIn = isLoggedIn(svc.id);
+        const displayName = getDisplayName(svc.id);
+        const badgeCls = loggedIn ? 'logged-in' : 'logged-out';
+        const badgeHTML = loggedIn
+            ? '<i class="fa-solid fa-circle-check"></i> ' + escapeHTML(displayName || 'Logged in')
+            : '<i class="fa-solid fa-circle-xmark"></i> Not logged in';
+        return `<div class="bb-service-auth-section" id="bb-auth-section-${svc.id}">
+            <div class="bb-service-auth-header">
+                <div class="bb-service-auth-icon" style="background-image:url('${svc.icon}');background-color:${svc.iconBg || 'transparent'};background-size:cover;background-position:center;"></div>
+                <strong>${svc.label}</strong>
+                <span class="bb-auth-badge ${badgeCls}" id="bb-auth-badge-${svc.id}">${badgeHTML}</span>
+            </div>
+            <div class="bb-auth-form" id="bb-auth-form-${svc.id}" style="${loggedIn ? 'display:none;' : ''}">
+                <input type="${svc.field1.type}" id="${svc.field1.id}" placeholder="${svc.field1.placeholder}" class="text_pole" style="flex:1;min-width:90px;">
+                <input type="${svc.field2.type}" id="${svc.field2.id}" placeholder="${svc.field2.placeholder}" class="text_pole" style="flex:1;min-width:90px;">
+                <button class="bb-auth-login-btn" data-service="${svc.id}"><i class="fa-solid fa-right-to-bracket"></i> Login</button>
+            </div>
+            <div class="bb-auth-logged-in-row" id="bb-auth-loggedin-${svc.id}" style="${loggedIn ? '' : 'display:none;'}">
+                <button class="bb-auth-logout-btn" data-service="${svc.id}"><i class="fa-solid fa-right-from-bracket"></i> Logout</button>
+            </div>
+        </div>`;
+    }
+
+    // Build auth section HTML for paste-based services (CharaVault, Sakura, CrushOn)
+    function buildPasteAuthSection(svc) {
+        const loggedIn = isLoggedIn(svc.id);
+        const displayName = getDisplayName(svc.id);
+        const savedVal = settings[svc.settingsKey] || '';
+        const badgeCls = loggedIn ? 'logged-in' : 'logged-out';
+        const badgeHTML = loggedIn
+            ? '<i class="fa-solid fa-circle-check"></i> ' + escapeHTML(displayName || 'Logged in')
+            : '<i class="fa-solid fa-circle-xmark"></i> Not logged in';
+        return `<div class="bb-service-auth-section" id="bb-auth-section-${svc.id}">
+            <div class="bb-service-auth-header">
+                <div class="bb-service-auth-icon" style="background-image:url('${svc.icon}');background-color:${svc.iconBg};background-size:75%;background-repeat:no-repeat;background-position:center;"></div>
+                <strong>${svc.label}</strong>
+                <span class="bb-auth-badge ${badgeCls}" id="bb-auth-badge-${svc.id}">${badgeHTML}</span>
+            </div>
+            <div class="bb-auth-hint">${svc.hint}</div>
+            <div class="bb-auth-paste-row">
+                <input type="password" id="bb-${svc.id}-token-input" class="text_pole"
+                       placeholder="${svc.placeholder}"
+                       value="${escapeHTML(savedVal)}"
+                       style="flex:1;font-family:monospace;font-size:0.8em;">
+                <button class="bb-auth-verify-btn" data-service="${svc.id}"><i class="fa-solid fa-check"></i> Verify</button>
+                <button class="bb-auth-logout-btn" data-service="${svc.id}" style="${!loggedIn ? 'display:none;' : ''}"><i class="fa-solid fa-xmark"></i> Clear</button>
+            </div>
+        </div>`;
+    }
+
+    const authSectionsLoginHTML = [
+        { id: 'saucepan', label: 'Saucepan.ai', icon: 'https://saucepan.ai/favicon-32x32.png', iconBg: '',
+          field1: { id: 'bb-saucepan-handle', placeholder: 'Handle (username)', type: 'text' },
+          field2: { id: 'bb-saucepan-password', placeholder: 'Password', type: 'password' } },
+        { id: 'harpy', label: 'Harpy.chat', icon: 'https://harpy.chat/icons/logo.svg', iconBg: '#1a1a2e',
+          field1: { id: 'bb-harpy-email', placeholder: 'Email', type: 'email' },
+          field2: { id: 'bb-harpy-password', placeholder: 'Password', type: 'password' } }
+    ].map(buildLoginAuthSection).join('');
+
+    const authSectionsPasteHTML = [
+        { id: 'charavault', label: 'CharaVault', icon: 'https://charavault.net/favicon.svg', iconBg: '#0a0a0f',
+          settingsKey: 'charavaultCookie', placeholder: 'session=abc123…',
+          hint: 'Log in at charavault.net → DevTools (F12) → Application → Cookies → charavault.net → copy the session cookie value.' },
+        { id: 'sakura', label: 'Sakura.fm', icon: 'https://sakura.fm/favicon.ico', iconBg: '#1a0a1a',
+          settingsKey: 'sakuraToken', placeholder: 'eyJ…',
+          hint: 'Log in at sakura.fm → open browser console (F12) → run: <code>copy(await window.Clerk.session.getToken())</code> → paste the result here.' },
+        { id: 'crushon', label: 'CrushOn.AI', icon: 'https://crushon.ai/favicon-64x64.png', iconBg: 'transparent',
+          settingsKey: 'crushonCookie', placeholder: 'session token value…',
+          hint: 'Log in at crushon.ai → DevTools (F12) → Application → Cookies → crushon.ai → copy the <code>next-auth.session-token</code> value.' }
+    ].map(buildPasteAuthSection).join('');
 
     // Create a completely new modal structure with dedicated classes
     const modalHTML = `
@@ -2152,7 +3132,6 @@ function showSettingsModal() {
 
                     <!-- API TAB -->
                     <div class="bb-settings-tab-content" data-content="api">
-                        <div class="bb-setting-group" style="text-align: center;">
                             <div style="display: inline-block; background: white; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px;">
                                 <img src="https://avatars.charhub.io/icons/assets/full_logo.png" alt="Chub" style="height: 28px;">
                             </div>
@@ -2175,9 +3154,28 @@ function showSettingsModal() {
                             </div>
                         </div>
 
+                        <div class="bb-setting-group" style="margin-top: 15px;">
+                            <label for="bb-setting-chub-token"><i class="fa-solid fa-key"></i> Chub API Token:</label>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <input type="password" id="bb-setting-chub-token" class="text_pole"
+                                       placeholder="glpat-..."
+                                       value="${settings.chubToken || ''}"
+                                       style="flex: 1; font-family: monospace;">
+                                <button id="bb-chub-token-toggle" class="menu_button" style="padding: 6px 10px; min-width: auto;" title="Show/Hide">
+                                    <i class="fa-solid fa-eye"></i>
+                                </button>
+                                <button id="bb-chub-token-validate" class="menu_button" style="padding: 6px 10px; min-width: auto;" title="Test Token">
+                                    <i class="fa-solid fa-check-circle"></i>
+                                </button>
+                            </div>
+                            <small style="color: rgba(255,255,255,0.5); display: block; margin-top: 5px;">
+                                Log in to Chub.ai → Open browser console → Type <code>localStorage.URQL_TOKEN</code> → Paste the token here.
+                                Enables: My Favorites, Timeline, Follow, Gallery.
+                            </small>
+                        </div>
+
                         <hr style="border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 20px 0;">
 
-                        <div class="bb-setting-group" style="text-align: center;">
                             <div style="display: inline-block; background: linear-gradient(135deg, #2d1b4e, #1a1a2e); border-radius: 8px; padding: 8px 16px; margin-bottom: 10px;">
                                 <span style="font-size: 18px; font-weight: bold; color: #c9a0ff;">Character Tavern</span>
                             </div>
@@ -2237,26 +3235,17 @@ function showSettingsModal() {
 
                         <hr style="border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 20px 0;">
 
-                        <div class="bb-setting-group" style="text-align: center;">
-                            <div style="display: inline-block; background: linear-gradient(135deg, #1a1a2e, #16213e); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px;">
-                                <img src="https://quillgen.app/logo-dark.png" alt="QuillGen" style="height: 32px; display: block;">
-                            </div>
-                            <div style="margin-bottom: 10px;">
-                                <strong style="color: rgba(255,255,255,0.9);">QuillGen</strong>
-                            </div>
-                            <small style="color: rgba(255,255,255,0.6); display: block; margin-bottom: 15px;">
-                                Browse public characters from QuillGen. Add your API key to also see your own characters.
-                                <a href="https://quillgen.app" target="_blank" style="color: rgba(100, 150, 255, 0.9);">Get your API key →</a>
-                            </small>
+                        <hr style="border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 20px 0;">
+
+                        <!-- ═══ 5 New Service Accounts ═══ -->
+                        <div class="bb-setting-group">
+                            <label><i class="fa-solid fa-id-badge"></i> Service Accounts</label>
+                            <small style="color: rgba(255,255,255,0.5);">Login to access favorites and personalized content.</small>
                         </div>
 
-                        <div class="bb-setting-group">
-                            <label for="bb-setting-quillgen-key">QuillGen API Key (optional):</label>
-                            <input type="password" id="bb-setting-quillgen-key" class="text_pole" 
-                                   placeholder="sk_..." 
-                                   value="${settings.quillgenApiKey || ''}"
-                                   style="width: 100%; font-family: monospace;">
-                        </div>
+                        ${authSectionsLoginHTML}
+
+                        ${authSectionsPasteHTML}
                     </div>
                 </div>
 
@@ -2308,6 +3297,176 @@ function showSettingsModal() {
             e.stopPropagation();
             const enabled = item.classList.toggle('enabled');
             item.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+        });
+    });
+
+    // Chub token show/hide toggle
+    const chubTokenInput = document.getElementById('bb-setting-chub-token');
+    const chubTokenToggle = document.getElementById('bb-chub-token-toggle');
+    if (chubTokenToggle && chubTokenInput) {
+        chubTokenToggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isPassword = chubTokenInput.type === 'password';
+            chubTokenInput.type = isPassword ? 'text' : 'password';
+            chubTokenToggle.querySelector('i').className = `fa-solid fa-eye${isPassword ? '-slash' : ''}`;
+        });
+    }
+
+    // Chub token validate button
+    const chubValidateBtn = document.getElementById('bb-chub-token-validate');
+    if (chubValidateBtn && chubTokenInput) {
+        chubValidateBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const token = chubTokenInput.value.trim();
+            if (!token) {
+                toastr.warning('Enter a token first');
+                return;
+            }
+            chubValidateBtn.disabled = true;
+            chubValidateBtn.querySelector('i').className = 'fa-solid fa-spinner fa-spin';
+            try {
+                const data = await validateChubToken(token);
+                const username = data.user_name || data.name || data.username || 'Unknown';
+                toastr.success(`Token valid! Logged in as: ${username}`, 'Chub Auth', { timeOut: 4000 });
+            } catch (err) {
+                toastr.error(`Token invalid: ${err.message}`, 'Chub Auth');
+            } finally {
+                chubValidateBtn.disabled = false;
+                chubValidateBtn.querySelector('i').className = 'fa-solid fa-check-circle';
+            }
+        });
+    }
+
+    // ─── Auth: Login buttons (Saucepan + Harpy) ───────────────────────────────
+    function updateAuthSectionUI(service, displayName) {
+        const badge = document.getElementById(`bb-auth-badge-${service}`);
+        const form = document.getElementById(`bb-auth-form-${service}`);
+        const loggedinRow = document.getElementById(`bb-auth-loggedin-${service}`);
+        if (badge) {
+            badge.className = 'bb-auth-badge logged-in';
+            badge.innerHTML = `<i class="fa-solid fa-circle-check"></i> ${escapeHTML(displayName || 'Logged in')}`;
+        }
+        if (form) form.style.display = 'none';
+        if (loggedinRow) loggedinRow.style.display = '';
+
+        // Show favorites source buttons for this service
+        document.querySelectorAll(`.bb-${service}-auth-only`).forEach(el => { el.style.display = ''; });
+    }
+
+    function clearAuthSectionUI(service) {
+        const badge = document.getElementById(`bb-auth-badge-${service}`);
+        const form = document.getElementById(`bb-auth-form-${service}`);
+        const loggedinRow = document.getElementById(`bb-auth-loggedin-${service}`);
+        if (badge) {
+            badge.className = 'bb-auth-badge logged-out';
+            badge.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Not logged in';
+        }
+        if (form) form.style.display = '';
+        if (loggedinRow) loggedinRow.style.display = 'none';
+
+        // Hide favorites source buttons
+        document.querySelectorAll(`.bb-${service}-auth-only`).forEach(el => { el.style.display = 'none'; });
+    }
+
+    panel.querySelectorAll('.bb-auth-login-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const service = btn.dataset.service;
+            const origHTML = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+            try {
+                let result;
+                if (service === 'saucepan') {
+                    const handle = document.getElementById('bb-saucepan-handle')?.value.trim();
+                    const password = document.getElementById('bb-saucepan-password')?.value;
+                    if (!handle || !password) { toastr.warning('Enter handle and password'); return; }
+                    result = await loginSaucepan(handle, password);
+                    applyServiceLogin('saucepan', result.token, { displayName: result.displayName });
+                    settings.saucepanToken = result.token;
+                    settings.saucepanDisplayName = result.displayName || '';
+                } else if (service === 'harpy') {
+                    const email = document.getElementById('bb-harpy-email')?.value.trim();
+                    const password = document.getElementById('bb-harpy-password')?.value;
+                    if (!email || !password) { toastr.warning('Enter email and password'); return; }
+                    result = await loginHarpy(email, password);
+                    applyServiceLogin('harpy', result.token, { userId: result.userId, displayName: result.displayName, harpySetTokenFn: setHarpyUserToken });
+                    settings.harpyToken = result.token;
+                    settings.harpyUserId = result.userId || '';
+                    settings.harpyDisplayName = result.displayName || '';
+                }
+                saveSettingsDebounced();
+                updateAuthSectionUI(service, result?.displayName || result?.email || 'Logged in');
+                toastr.success(`Logged in${result?.displayName ? ' as ' + result.displayName : ''}`, escapeHTML(service));
+            } catch (err) {
+                toastr.error(`Login failed: ${err.message}`, escapeHTML(service));
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = origHTML;
+            }
+        });
+    });
+
+    // ─── Auth: Verify buttons (paste-based services) ───────────────────────────
+    panel.querySelectorAll('.bb-auth-verify-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const service = btn.dataset.service;
+            const inputEl = document.getElementById(`bb-${service}-token-input`);
+            const tokenVal = inputEl?.value.trim();
+            if (!tokenVal) { toastr.warning('Paste your token/cookie first'); return; }
+            const origHTML = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+            try {
+                let displayName = null;
+                if (service === 'charavault') {
+                    const me = await verifyCharaVaultCookie(tokenVal);
+                    displayName = me.display_name || me.email || 'Logged in';
+                    applyServiceLogin('charavault', tokenVal, { displayName });
+                    settings.charavaultCookie = tokenVal;
+                    settings.charavaultDisplayName = displayName;
+                } else if (service === 'sakura') {
+                    await verifySakuraToken(tokenVal);
+                    displayName = 'Logged in';
+                    applyServiceLogin('sakura', tokenVal, { displayName });
+                    settings.sakuraToken = tokenVal;
+                    settings.sakuraDisplayName = displayName;
+                } else if (service === 'crushon') {
+                    const session = await verifyCrushonCookie(tokenVal);
+                    displayName = session?.user?.name || session?.user?.email || 'Logged in';
+                    applyServiceLogin('crushon', tokenVal, { displayName });
+                    settings.crushonCookie = tokenVal;
+                    settings.crushonDisplayName = displayName;
+                }
+                saveSettingsDebounced();
+                updateAuthSectionUI(service, displayName);
+                // Show the clear button
+                const clearBtn = document.querySelector(`#bb-auth-section-${service} .bb-auth-logout-btn`);
+                if (clearBtn) clearBtn.style.display = '';
+                toastr.success(`Verified! Logged in as ${displayName}`, escapeHTML(service));
+            } catch (err) {
+                toastr.error(`Verification failed: ${err.message}`, escapeHTML(service));
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = origHTML;
+            }
+        });
+    });
+
+    // ─── Auth: Logout / Clear buttons ─────────────────────────────────────────
+    panel.querySelectorAll('.bb-auth-logout-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const service = btn.dataset.service;
+            clearServiceAuth(service, settings);
+            if (service === 'harpy') setHarpyUserToken(null);
+            saveSettingsDebounced();
+            clearAuthSectionUI(service);
+            // Clear paste field if applicable
+            const inputEl = document.getElementById(`bb-${service}-token-input`);
+            if (inputEl) inputEl.value = '';
+            toastr.info(`Logged out of ${service}`, '');
         });
     });
 
@@ -2379,13 +3538,18 @@ function showSettingsModal() {
         });
         settings.randomServices = randomServices;
 
-        // QuillGen settings
-        const oldApiKey = settings.quillgenApiKey;
-        settings.quillgenApiKey = document.getElementById('bb-setting-quillgen-key').value.trim();
-
-        // Clear QuillGen cache if settings changed
-        if (oldApiKey !== settings.quillgenApiKey) {
-            clearQuillgenCache();
+        // Chub token
+        const newChubToken = (document.getElementById('bb-setting-chub-token')?.value || '').trim();
+        if (newChubToken !== settings.chubToken) {
+            settings.chubToken = newChubToken;
+            setChubToken(newChubToken);
+            // Show/hide auth-only buttons
+            document.querySelectorAll('.bot-browser-chub-auth-only').forEach(el => {
+                el.style.display = newChubToken ? '' : 'none';
+            });
+            if (newChubToken) {
+                fetchFavoriteIds(true).catch(() => {});
+            }
         }
 
         saveSettingsDebounced();
@@ -2781,7 +3945,7 @@ function addBotButton() {
 
     botButton.on('click', function(event) {
         event.stopPropagation();
-        toggleBotMenu();
+        openStandaloneBrowser();
     });
 
     cache();

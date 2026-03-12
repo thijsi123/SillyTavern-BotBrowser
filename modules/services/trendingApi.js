@@ -2,6 +2,7 @@
 // Fetches trending/popular characters from various sources
 
 import { proxiedFetch, CORS_PROXY } from './corsProxy.js';
+import { getJannyAvatarUrl, getJannyCharactersByIds } from './jannyApi.js';
 
 // ==================== CHARACTER TAVERN TRENDING ====================
 
@@ -345,6 +346,7 @@ export function transformWyvernTrendingCard(node) {
 // ==================== JANNYAI TRENDING (via JanitorAI API) ====================
 
 const JANITORAI_TRENDING_URL = 'https://janitorai.com/hampter/characters';
+const JANITORAI_AVATAR_BASE = 'https://ella.janitorai.com/bot-avatars/';
 
 // Browser-like headers to bypass Cloudflare - sec-* headers are critical
 const JANITORAI_HEADERS = {
@@ -373,6 +375,51 @@ export function resetJannyTrendingState() {
     jannyTrendingState.hasMore = true;
     jannyTrendingState.isLoading = false;
     jannyTrendingState.totalHits = 0;
+}
+
+function mergeJannyTrendingCharacter(trendingChar, jannyChar) {
+    if (!jannyChar || typeof jannyChar !== 'object') {
+        return trendingChar;
+    }
+
+    return {
+        ...trendingChar,
+        ...jannyChar,
+        _janitorTrending: trendingChar,
+        _jannyCharacter: jannyChar,
+        creator_name: trendingChar.creator_name || trendingChar.creatorName || '',
+        creator_id: trendingChar.creator_id || jannyChar.creatorId || '',
+        avatar: jannyChar.avatar || trendingChar.avatar || '',
+        description: jannyChar.description || trendingChar.description || '',
+        tags: Array.isArray(jannyChar.tags) && jannyChar.tags.length > 0 ? jannyChar.tags : trendingChar.tags,
+        tagIds: Array.isArray(jannyChar.tagIds) && jannyChar.tagIds.length > 0 ? jannyChar.tagIds : trendingChar.tagIds,
+        stats: {
+            ...(trendingChar.stats || {}),
+            ...(jannyChar.stats || {}),
+        },
+        isNsfw: typeof jannyChar.isNsfw === 'boolean' ? jannyChar.isNsfw : trendingChar.isNsfw,
+        totalToken: jannyChar.totalToken || trendingChar.totalToken || trendingChar.total_tokens || 0,
+        permanentToken: jannyChar.permanentToken || trendingChar.permanentToken || 0,
+    };
+}
+
+async function hydrateJannyTrendingCharacters(characters = []) {
+    const ids = [...new Set((Array.isArray(characters) ? characters : [])
+        .map((char) => String(char?.id || '').trim())
+        .filter(Boolean))];
+
+    if (ids.length === 0) {
+        return Array.isArray(characters) ? characters : [];
+    }
+
+    try {
+        const hydrated = await getJannyCharactersByIds(ids);
+        const byId = new Map(hydrated.map((char) => [String(char?.id || ''), char]));
+        return characters.map((char) => mergeJannyTrendingCharacter(char, byId.get(String(char?.id || ''))));
+    } catch (error) {
+        console.warn('[Bot Browser] JannyAI trending hydration failed, using JanitorAI payload only:', error);
+        return characters;
+    }
 }
 
 /**
@@ -413,6 +460,7 @@ export async function fetchJannyTrending(options = {}) {
         const data = await response.json();
 
         const characters = data.data || [];
+        const hydratedCharacters = await hydrateJannyTrendingCharacters(characters);
         const hasMore = characters.length > 0;
 
         jannyTrendingState.page = page;
@@ -423,7 +471,7 @@ export async function fetchJannyTrending(options = {}) {
         console.log(`[Bot Browser] JanitorAI trending returned ${characters.length} characters (page ${page})`);
 
         return {
-            characters,
+            characters: hydratedCharacters,
             total: data.total || characters.length,
             page,
             hasMore
@@ -454,14 +502,22 @@ export async function loadMoreJannyTrending(options = {}) {
  * @returns {Object} Card in BotBrowser format
  */
 export function transformJannyTrendingCard(char) {
-    // Avatar URL format: https://ella.janitorai.com/bot-avatars/{avatar}
-    const avatarUrl = char.avatar
-        ? `https://ella.janitorai.com/bot-avatars/${char.avatar}`
-        : '';
+    const jannyPayload = char?._jannyCharacter || null;
+    const janitorAvatar = String(char?.avatar || '').trim();
+    const avatarUrl = jannyPayload?.avatar
+        ? getJannyAvatarUrl(jannyPayload.avatar)
+        : /^https?:\/\//i.test(janitorAvatar)
+            ? janitorAvatar
+            : janitorAvatar
+                ? `${JANITORAI_AVATAR_BASE}${janitorAvatar}`
+                : '';
 
     // Extract tags from the tags array
     const tags = (char.tags || []).map(t => t.name || t.slug || t);
-    if (char.is_nsfw && !tags.some(t => t.toLowerCase() === 'nsfw')) {
+    const isNsfw = typeof char.isNsfw === 'boolean'
+        ? char.isNsfw
+        : (char.is_nsfw || char.is_image_nsfw || false);
+    if (isNsfw && !tags.some(t => String(t).toLowerCase() === 'nsfw')) {
         tags.unshift('NSFW');
     }
 
@@ -480,19 +536,26 @@ export function transformJannyTrendingCard(char) {
     return {
         id: char.id,
         name: char.name || 'Unnamed',
-        creator: char.creator_name || '',
-        creator_id: char.creator_id || '',
+        creator: char.creator_name || char.creatorName || '',
+        creator_id: char.creator_id || char.creatorId || '',
         avatar_url: avatarUrl,
         image_url: `https://jannyai.com/characters/${char.id}_character-${slug}`,
         tags: tags,
-        description: char.description || '',
+        description: stripHtmlTags(char.description || ''),
         website_description: char.description ? stripHtmlTags(char.description).substring(0, 300) : '',
-        created_at: char.created_at,
-        updated_at: char.updated_at,
-        possibleNsfw: char.is_nsfw || char.is_image_nsfw || false,
-        chatCount: char.stats?.chat || 0,
-        messageCount: char.stats?.message || 0,
-        totalTokens: char.total_tokens || 0,
+        desc_preview: char.description ? stripHtmlTags(char.description).substring(0, 150) : '',
+        created_at: char.created_at || char.createdAt,
+        updated_at: char.updated_at || char.updatedAt,
+        possibleNsfw: isNsfw,
+        chatCount: char.stats?.chatCount || char.stats?.chat || 0,
+        messageCount: char.stats?.messageCount || char.stats?.message || 0,
+        viewCount: char.stats?.viewCount || char.stats?.view || 0,
+        downloadCount: char.stats?.downloadCount || char.stats?.download || 0,
+        bookmarkCount: char.stats?.bookmarkCount || char.stats?.bookmark || 0,
+        totalTokens: char.totalToken || char.total_tokens || 0,
+        permanentToken: char.permanentToken || 0,
+        creatorId: char.creatorId || char.creator_id || '',
+        isLowQuality: !!char.isLowQuality,
         service: 'jannyai',
         sourceService: 'jannyai_trending',
         isJannyAI: true,

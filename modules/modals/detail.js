@@ -7,8 +7,22 @@ import { fetchJannyCharacterDetails, transformFullJannyCharacter } from '../serv
 import { fetchRisuRealmCharacter, transformFullRisuRealmCharacter } from '../services/risuRealmApi.js';
 import { getBackyardCharacter, transformFullBackyardCharacter } from '../services/backyardApi.js';
 import { getPygmalionCharacter, transformFullPygmalionCharacter } from '../services/pygmalionApi.js';
+import { getCharavaultCard } from '../services/charavaultApi.js';
+import { getSakuraCharacter, transformFullSakuraCharacter } from '../services/sakuraApi.js';
+import { getSaucepanCompanion, transformFullSaucepanCompanion } from '../services/saucepanApi.js';
+import { getCrushonCharacter, transformFullCrushonCharacter } from '../services/crushonApi.js';
+import { getHarpyCharacter, transformFullHarpyCharacter } from '../services/harpyApi.js';
+import { getBotifyBot, transformFullBotifyBot } from '../services/botifyApi.js';
+import { transformFullJoylandBot } from '../services/joylandApi.js';
+import { transformFullSpicychatCharacter } from '../services/spicychatApi.js';
+import { getTalkieCharacter, transformFullTalkieCharacter } from '../services/talkieApi.js';
 import { buildProxyUrl, PROXY_TYPES, proxiedFetch } from '../services/corsProxy.js';
 import { getSourceUrl } from '../utils/utils.js';
+import {
+    isChubLoggedIn, getChubFavoriteIds, getChubFollowsList,
+    fetchGalleryImages, fetchFollowsList, fetchFavoriteIds,
+    toggleFavorite, toggleFollow
+} from '../services/chubAccount.js';
 import { characters, selectCharacterById } from '/script.js';
 
 let isOpeningModal = false;
@@ -45,6 +59,29 @@ export async function showCardDetail(card, extensionName, extension_settings, st
     try {
         let fullCard = await loadFullCard(card);
 
+        // Fetch gallery images for Chub cards (non-blocking, parallel with favorites/follows prefetch)
+        const isChubCard = fullCard.isLiveChub || fullCard.service === 'chub' || fullCard.sourceService === 'chub';
+        if (isChubCard && fullCard.chubNodeId && isChubLoggedIn()) {
+            try {
+                const [galleryImages] = await Promise.all([
+                    fetchGalleryImages(fullCard.chubNodeId),
+                    fetchFavoriteIds(),
+                    fetchFollowsList(),
+                ]);
+                fullCard._galleryImages = galleryImages;
+            } catch (e) {
+                console.warn('[Bot Browser] Failed to fetch Chub gallery/favorites/follows:', e);
+                fullCard._galleryImages = [];
+            }
+        } else if (isChubCard && fullCard.chubNodeId) {
+            // Even without login, still try to fetch gallery
+            try {
+                fullCard._galleryImages = await fetchGalleryImages(fullCard.chubNodeId);
+            } catch (e) {
+                fullCard._galleryImages = [];
+            }
+        }
+
         const clickedName = (card.name || '').trim().toLowerCase();
         const loadedName = (fullCard.name || '').trim().toLowerCase();
         if (clickedName && loadedName && clickedName !== loadedName) {
@@ -53,16 +90,6 @@ export async function showCardDetail(card, extensionName, extension_settings, st
         }
 
         state.selectedCard = fullCard;
-
-        // Log service properties for debugging creator click warnings
-        console.log('[Bot Browser] Detail modal selectedCard set:', {
-            name: fullCard?.name,
-            service: fullCard?.service,
-            sourceService: fullCard?.sourceService,
-            isRisuRealm: fullCard?.isRisuRealm,
-            isJannyAI: fullCard?.isJannyAI,
-            isLiveApi: fullCard?.isLiveApi
-        });
 
         if (save) {
             state.recentlyViewed = addToRecentlyViewed(extensionName, extension_settings, state.recentlyViewed, fullCard);
@@ -117,7 +144,16 @@ async function loadFullCard(card) {
             console.log('[Bot Browser] Fetching full Chub character data for:', chubFullPath);
             const charData = await getChubCharacter(chubFullPath);
             const fullData = transformFullChubCharacter(charData);
-            fullCard = { ...card, ...fullData, isLiveChub: true, fullPath: chubFullPath };
+            const node = charData.node || charData;
+            fullCard = {
+                ...card, ...fullData, isLiveChub: true, fullPath: chubFullPath,
+                // Store extra stats from the node for detail modal
+                nFavorites: node.starCount || card.starCount || 0,
+                nMessages: node.nMessages || 0,
+                nChats: node.nChats || 0,
+                forksCount: node.forks_count || 0,
+                chubNodeId: node.id || null,
+            };
             console.log('[Bot Browser] Loaded full Chub character data:', fullCard.name);
             return fullCard;
         } catch (error) {
@@ -223,6 +259,132 @@ async function loadFullCard(card) {
         }
     }
 
+    // CharaVault live API cards - cards are downloadable PNGs, detail API provides metadata
+    const looksLikeCharaVaultCard = card.isCharaVault || card.service === 'charavault' || card.sourceService === 'charavault';
+    if (looksLikeCharaVaultCard && card.isLiveApi && (card._folder || card.folder) && (card._file || card.file)) {
+        const cvFolder = card._folder || card.folder;
+        const cvFile = card._file || card.file;
+        try {
+            const detail = await getCharavaultCard(cvFolder, cvFile);
+            fullCard = {
+                ...card,
+                description: detail.description || card.description || '',
+                first_mes: detail.first_mes || card.first_mes || '',
+                first_message: detail.first_mes || card.first_message || '',
+                mes_example: detail.mes_example || card.mes_example || '',
+                tags: detail.tags || card.tags || [],
+                _folder: cvFolder,
+                _file: cvFile,
+                isCharaVault: true
+            };
+            return fullCard;
+        } catch (error) {
+            console.error('[Bot Browser] Failed to load full CharaVault character:', error);
+        }
+    }
+
+    // Sakura.fm live API cards
+    const looksLikeSakuraCard = card.isSakura || card.service === 'sakura' || card.sourceService === 'sakura';
+    if (looksLikeSakuraCard && card.id && card.isLiveApi) {
+        try {
+            const charData = await getSakuraCharacter(card.id);
+            const transformed = transformFullSakuraCharacter(charData);
+            fullCard = { ...card, ...transformed, isSakura: true };
+            console.log('[Bot Browser] Loaded full Sakura.fm character:', fullCard.name);
+            return fullCard;
+        } catch (error) {
+            console.error('[Bot Browser] Failed to load full Sakura.fm character:', error);
+        }
+    }
+
+    // Saucepan.ai live API cards
+    const looksLikeSaucepanCard = card.isSaucepan || card.service === 'saucepan' || card.sourceService === 'saucepan';
+    if (looksLikeSaucepanCard && card.id && card.isLiveApi) {
+        try {
+            const charData = await getSaucepanCompanion(card.id);
+            const transformed = transformFullSaucepanCompanion(charData);
+            fullCard = { ...card, ...transformed, isSaucepan: true };
+            console.log('[Bot Browser] Loaded full Saucepan.ai character:', fullCard.name);
+            return fullCard;
+        } catch (error) {
+            console.error('[Bot Browser] Failed to load full Saucepan.ai character:', error);
+        }
+    }
+
+    // CrushOn.ai live API cards
+    const looksLikeCrushonCard = card.isCrushon || card.service === 'crushon' || card.sourceService === 'crushon';
+    if (looksLikeCrushonCard && card.id && card.isLiveApi) {
+        try {
+            const charData = await getCrushonCharacter(card.id);
+            const transformed = transformFullCrushonCharacter(charData);
+            fullCard = { ...card, ...transformed, isCrushon: true };
+            console.log('[Bot Browser] Loaded full CrushOn.ai character:', fullCard.name);
+            return fullCard;
+        } catch (error) {
+            console.error('[Bot Browser] Failed to load full CrushOn.ai character:', error);
+        }
+    }
+
+    // Harpy.chat live API cards
+    const looksLikeHarpyCard = card.isHarpy || card.service === 'harpy' || card.sourceService === 'harpy';
+    if (looksLikeHarpyCard && card.id && card.isLiveApi) {
+        try {
+            const charData = await getHarpyCharacter(card.id);
+            const transformed = transformFullHarpyCharacter(charData);
+            fullCard = { ...card, ...transformed, isHarpy: true };
+            console.log('[Bot Browser] Loaded full Harpy.chat character:', fullCard.name);
+            return fullCard;
+        } catch (error) {
+            console.error('[Bot Browser] Failed to load full Harpy.chat character:', error);
+        }
+    }
+
+    const looksLikeBotifyCard = card.isBotify || card.service === 'botify' || card.sourceService === 'botify';
+    if (looksLikeBotifyCard && card.id && card.isLiveApi) {
+        try {
+            const botData = await getBotifyBot(card.id);
+            const transformed = transformFullBotifyBot(botData);
+            fullCard = { ...card, ...transformed, isBotify: true };
+            console.log('[Bot Browser] Loaded full Botify.ai bot:', fullCard.name);
+            return fullCard;
+        } catch (error) {
+            console.error('[Bot Browser] Failed to load full Botify.ai bot:', error);
+        }
+    }
+
+    const looksLikeJoylandCard = card.isJoyland || card.service === 'joyland' || card.sourceService === 'joyland';
+    if (looksLikeJoylandCard && card.isLiveApi) {
+        const transformed = transformFullJoylandBot(card);
+        fullCard = { ...card, ...transformed, isJoyland: true };
+        return fullCard;
+    }
+
+    const looksLikeSpicychatCard = card.isSpicychat || card.service === 'spicychat' || card.sourceService === 'spicychat';
+    if (looksLikeSpicychatCard && card.isLiveApi) {
+        const transformed = transformFullSpicychatCharacter(card);
+        fullCard = { ...card, ...transformed, isSpicychat: true };
+        return fullCard;
+    }
+
+    const looksLikeTalkieCard = card.isTalkie || card.service === 'talkie' || card.sourceService === 'talkie';
+    if (looksLikeTalkieCard && card.id && card.isLiveApi) {
+        try {
+            const npcData = await getTalkieCharacter(card.id);
+            if (npcData) {
+                const transformed = transformFullTalkieCharacter(npcData);
+                fullCard = { ...card, ...transformed, isTalkie: true };
+                console.log('[Bot Browser] Loaded full Talkie AI character:', fullCard.name);
+                return fullCard;
+            }
+        } catch (error) {
+            console.error('[Bot Browser] Failed to load full Talkie AI character:', error);
+        }
+        // Fall back to transform from browse data
+        const transformed = transformFullTalkieCharacter(card);
+        fullCard = { ...card, ...transformed, isTalkie: true };
+        return fullCard;
+    }
+
     if (card.entries && typeof card.entries === 'object' && Object.keys(card.entries).length > 0) {
         return card;
     }
@@ -295,6 +457,34 @@ function createDetailModal(fullCard, isRandom = false) {
         detailModal.dataset.stCharacterIndex = stCharacter.index;
     }
 
+    // Build chubFeatures for Chub cards
+    let chubFeatures = null;
+    const isChubCard = fullCard.isLiveChub || fullCard.service === 'chub' || fullCard.sourceService === 'chub';
+    if (isChubCard) {
+        const loggedIn = isChubLoggedIn();
+        const favIds = getChubFavoriteIds();
+        const follows = getChubFollowsList();
+        const charNumId = fullCard.chubNodeId || null;
+
+        chubFeatures = {
+            isChubCard: true,
+            isLoggedIn: loggedIn,
+            charId: charNumId,
+            isFavorited: charNumId ? favIds.has(charNumId) : (fullCard._isFavorited || false),
+            isFollowing: follows ? follows.has((cardData.creator || '').toLowerCase()) : false,
+            galleryImages: fullCard._galleryImages || [],
+            stats: {
+                downloads: fullCard.downloadCount || fullCard.nChats || 0,
+                favorites: fullCard.nFavorites || fullCard.starCount || 0,
+                rating: fullCard.rating || 0,
+                ratingCount: fullCard.ratingCount || 0,
+                tokens: fullCard.nTokens || 0,
+                chats: fullCard.nChats || 0,
+                messages: fullCard.nMessages || 0,
+            },
+        };
+    }
+
     detailModal.innerHTML = buildDetailModalHTML(
         cardData.cardName,
         cardData.imageUrl,
@@ -317,7 +507,8 @@ function createDetailModal(fullCard, isRandom = false) {
         isRandom,
         isImported,
         characterExistsInST,
-        sourceUrlData
+        sourceUrlData,
+        chubFeatures
     );
 
     return { detailOverlay, detailModal };
@@ -426,6 +617,63 @@ function setupDetailModalEvents(detailModal, detailOverlay, fullCard, state) {
             }
         });
     }
+
+    // Chub Favorite button
+    const chubFavBtn = detailModal.querySelector('.bot-browser-chub-favorite-btn');
+    if (chubFavBtn) {
+        chubFavBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const charId = parseInt(chubFavBtn.dataset.charId, 10);
+            if (!charId) return;
+            chubFavBtn.disabled = true;
+            try {
+                const nowFavorited = await toggleFavorite(charId);
+                chubFavBtn.classList.toggle('favorited', nowFavorited);
+                chubFavBtn.querySelector('i').className = nowFavorited ? 'fa-solid fa-heart' : 'fa-regular fa-heart';
+                chubFavBtn.querySelector('span').textContent = nowFavorited ? 'Favorited' : 'Favorite';
+                toastr.success(nowFavorited ? 'Added to favorites' : 'Removed from favorites', '', { timeOut: 2000 });
+            } catch (err) {
+                console.error('[Bot Browser] Toggle favorite failed:', err);
+                toastr.error('Failed to update favorite');
+            } finally {
+                chubFavBtn.disabled = false;
+            }
+        });
+    }
+
+    // Chub Follow button
+    const chubFollowBtn = detailModal.querySelector('.bot-browser-follow-btn');
+    if (chubFollowBtn) {
+        chubFollowBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const username = chubFollowBtn.dataset.username;
+            if (!username) return;
+            chubFollowBtn.disabled = true;
+            try {
+                const nowFollowing = await toggleFollow(username);
+                chubFollowBtn.classList.toggle('following', nowFollowing);
+                chubFollowBtn.querySelector('i').className = `fa-solid fa-${nowFollowing ? 'check' : 'user-plus'}`;
+                chubFollowBtn.querySelector('span').textContent = `${nowFollowing ? 'Following' : 'Follow'} @${username}`;
+                toastr.success(nowFollowing ? `Now following @${username}` : `Unfollowed @${username}`, '', { timeOut: 2000 });
+            } catch (err) {
+                console.error('[Bot Browser] Toggle follow failed:', err);
+                toastr.error('Failed to update follow');
+            } finally {
+                chubFollowBtn.disabled = false;
+            }
+        });
+    }
+
+    // Gallery image clicks
+    detailModal.querySelectorAll('.bot-browser-gallery-thumb.clickable-image').forEach(thumb => {
+        thumb.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const imgUrl = thumb.dataset.imageUrl;
+            if (imgUrl) showImageLightbox(imgUrl);
+        });
+    });
 
     // Open in SillyTavern button - opens chat with character and closes BotBrowser
     const openInSTBtn = detailModal.querySelector('.bot-browser-open-in-st-btn');
