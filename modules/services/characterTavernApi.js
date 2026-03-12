@@ -8,6 +8,10 @@ import { extractCharacterDataFromPngArrayBuffer } from './embeddedCardParser.js'
 
 const CT_SITE_BASE = 'https://character-tavern.com';
 const CT_API_BASE = `${CT_SITE_BASE}/api/search/cards`;
+const CT_LIBRARY_BASE = `${CT_SITE_BASE}/library`;
+const CT_TIMELINE_BASE = `${CT_SITE_BASE}/api/account/timeline`;
+const CT_FOLLOW_BASE = `${CT_SITE_BASE}/api/account/follow`;
+const CT_LAST_USED_BASE = `${CT_SITE_BASE}/api/account/get-last-used-cards`;
 
 // API state for pagination
 export const characterTavernApiState = {
@@ -19,6 +23,133 @@ export const characterTavernApiState = {
     lastSearch: '',
     lastSort: ''
 };
+
+function characterTavernFetch(url, fetchOptions = {}, optionsOrAllowPublicAuth = true) {
+    const options = typeof optionsOrAllowPublicAuth === 'object' && optionsOrAllowPublicAuth !== null
+        ? optionsOrAllowPublicAuth
+        : { allowPublicAuth: optionsOrAllowPublicAuth };
+
+    return proxiedFetch(url, {
+        service: 'character_tavern',
+        allowPublicAuth: options.allowPublicAuth !== false,
+        proxyChain: options.proxyChain || null,
+        fetchOptions,
+    });
+}
+
+function readBalancedJsLiteral(source, startIndex) {
+    if (!source || startIndex < 0 || startIndex >= source.length) return '';
+
+    const openChar = source[startIndex];
+    const closeChar = openChar === '[' ? ']' : openChar === '{' ? '}' : '';
+    if (!closeChar) return '';
+
+    let depth = 0;
+    let inSingle = false;
+    let inDouble = false;
+    let inTemplate = false;
+    let escaped = false;
+
+    for (let i = startIndex; i < source.length; i++) {
+        const char = source[i];
+
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+
+        if (char === '\\') {
+            escaped = true;
+            continue;
+        }
+
+        if (inSingle) {
+            if (char === "'") inSingle = false;
+            continue;
+        }
+
+        if (inDouble) {
+            if (char === '"') inDouble = false;
+            continue;
+        }
+
+        if (inTemplate) {
+            if (char === '`') inTemplate = false;
+            continue;
+        }
+
+        if (char === "'") {
+            inSingle = true;
+            continue;
+        }
+
+        if (char === '"') {
+            inDouble = true;
+            continue;
+        }
+
+        if (char === '`') {
+            inTemplate = true;
+            continue;
+        }
+
+        if (char === openChar) {
+            depth += 1;
+        } else if (char === closeChar) {
+            depth -= 1;
+            if (depth === 0) {
+                return source.slice(startIndex, i + 1);
+            }
+        }
+    }
+
+    return '';
+}
+
+function extractCharacterTavernLiteral(html, fieldName) {
+    const marker = `${fieldName}:`;
+    const markerIndex = html.indexOf(marker);
+    if (markerIndex < 0) return '';
+
+    let literalStart = markerIndex + marker.length;
+    while (literalStart < html.length && /\s/.test(html[literalStart])) {
+        literalStart += 1;
+    }
+
+    return readBalancedJsLiteral(html, literalStart);
+}
+
+function normalizeCharacterTavernLiteral(literal) {
+    if (!literal) return '';
+
+    return literal
+        .replace(/new Date\((\d+)\)/g, (_, value) => {
+            const date = new Date(Number(value));
+            return Number.isNaN(date.getTime()) ? 'null' : JSON.stringify(date.toISOString());
+        })
+        .replace(/\bundefined\b/g, 'null')
+        .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3');
+}
+
+function parseCharacterTavernLiteral(literal, fallback) {
+    if (!literal) return fallback;
+
+    try {
+        return JSON.parse(normalizeCharacterTavernLiteral(literal));
+    } catch (error) {
+        console.warn('[Bot Browser] Character Tavern literal parse failed:', error);
+        return fallback;
+    }
+}
+
+function parseCharacterTavernLibraryHtml(html) {
+    return {
+        libraryCards: parseCharacterTavernLiteral(extractCharacterTavernLiteral(html, 'libraryCards'), []),
+        createdCards: parseCharacterTavernLiteral(extractCharacterTavernLiteral(html, 'createdCards'), []),
+        featuredCardIds: parseCharacterTavernLiteral(extractCharacterTavernLiteral(html, 'featuredCardIds'), []),
+        stats: parseCharacterTavernLiteral(extractCharacterTavernLiteral(html, 'stats'), {}),
+    };
+}
 
 function normalizeCtDate(value) {
     if (value == null || value === '') return '';
@@ -44,6 +175,29 @@ function getCharacterTavernCreator(node = {}) {
     return 'Unknown';
 }
 
+function getCharacterTavernPath(node = {}) {
+    if (typeof node.path === 'string' && node.path.trim()) return node.path.trim();
+    if (typeof node.fullPath === 'string' && node.fullPath.trim()) return node.fullPath.trim();
+    return '';
+}
+
+function getCharacterTavernDefinition(node = {}) {
+    return node.definition_character_description
+        || node.characterDefinition
+        || node.character_definition
+        || node.pageDescription
+        || node.tagline
+        || '';
+}
+
+function getCharacterTavernCreatorNotes(node = {}) {
+    return node.description
+        || node.pageDescription
+        || node.tagline
+        || node.creatorNotes
+        || '';
+}
+
 function getCharacterTavernImageUrl(path) {
     return path ? `https://cards.character-tavern.com/${path}.png` : '';
 }
@@ -55,14 +209,11 @@ export function getCharacterTavernDownloadUrl(path) {
 export async function getCharacterTavernEmbeddedCard(path) {
     if (!path) throw new Error('Character Tavern path is required');
 
-    const response = await proxiedFetch(getCharacterTavernDownloadUrl(path), {
-        service: 'character_tavern',
-        fetchOptions: {
-            headers: {
-                Accept: 'image/png,image/*;q=0.9,*/*;q=0.8',
-            },
+    const response = await characterTavernFetch(getCharacterTavernDownloadUrl(path), {
+        headers: {
+            Accept: 'image/png,image/*;q=0.9,*/*;q=0.8',
         },
-    });
+    }, false);
 
     if (!response.ok) {
         throw new Error(`Character Tavern card PNG error: ${response.status}`);
@@ -167,12 +318,9 @@ export async function searchCharacterTavern(options = {}) {
         const url = `${CT_API_BASE}?${params}`;
         console.log('[Bot Browser] Character Tavern API request:', url);
 
-        const response = await proxiedFetch(url, {
-            service: 'character_tavern',
-            fetchOptions: {
-                headers: {
-                    'Accept': 'application/json'
-                }
+        const response = await characterTavernFetch(url, {
+            headers: {
+                'Accept': 'application/json'
             }
         });
 
@@ -208,12 +356,9 @@ export async function searchCharacterTavern(options = {}) {
 export async function getCharacterTavernCharacter(path) {
     if (!path) throw new Error('Character Tavern path is required');
 
-    const response = await proxiedFetch(`${CT_SITE_BASE}/api/character/${path}`, {
-        service: 'character_tavern',
-        fetchOptions: {
-            headers: {
-                Accept: 'application/json',
-            },
+    const response = await characterTavernFetch(`${CT_SITE_BASE}/api/character/${path}`, {
+        headers: {
+            Accept: 'application/json',
         },
     });
 
@@ -227,12 +372,9 @@ export async function getCharacterTavernCharacter(path) {
 export async function getCharacterTavernAlternativeGreetings(id) {
     if (!id) return [];
 
-    const response = await proxiedFetch(`${CT_SITE_BASE}/api/character/${id}/alternative-greetings`, {
-        service: 'character_tavern',
-        fetchOptions: {
-            headers: {
-                Accept: 'application/json',
-            },
+    const response = await characterTavernFetch(`${CT_SITE_BASE}/api/character/${id}/alternative-greetings`, {
+        headers: {
+            Accept: 'application/json',
         },
     });
 
@@ -295,12 +437,9 @@ export async function getCharacterTavernLorebook(id) {
     }
 
     if (!response || !response.ok) {
-        response = await proxiedFetch(url, {
-            service: 'character_tavern',
-            fetchOptions: {
-                headers: {
-                    Accept: 'application/json',
-                },
+        response = await characterTavernFetch(url, {
+            headers: {
+                Accept: 'application/json',
             },
         });
     }
@@ -321,12 +460,9 @@ export async function getCharacterTavernLorebook(id) {
 export async function getCharacterTavernAuthorProfile(username) {
     if (!username) throw new Error('Character Tavern username is required');
 
-    const response = await proxiedFetch(`${CT_SITE_BASE}/author/${encodeURIComponent(username)}`, {
-        service: 'character_tavern',
-        fetchOptions: {
-            headers: {
-                Accept: 'text/html',
-            },
+    const response = await characterTavernFetch(`${CT_SITE_BASE}/author/${encodeURIComponent(username)}`, {
+        headers: {
+            Accept: 'text/html',
         },
     });
 
@@ -360,44 +496,148 @@ export async function getCharacterTavernAuthorProfile(username) {
     };
 }
 
+export async function getCharacterTavernTimeline() {
+    const followIds = await getCharacterTavernFollowIds();
+    if (!Array.isArray(followIds) || followIds.length === 0) return [];
+
+    const authorIds = [...new Set(followIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 12);
+    const pageSize = 12;
+    const requests = authorIds.map(async (authorUserId) => {
+        const params = new URLSearchParams({
+            page: '1',
+            limit: String(pageSize),
+            sort: 'newest',
+            authorUserId,
+        });
+        const response = await characterTavernFetch(`${CT_API_BASE}?${params}`, {
+            headers: {
+                Accept: 'application/json',
+            },
+        }, {
+            allowPublicAuth: false,
+        });
+
+        if (!response.ok) {
+            throw new Error(`Character Tavern followed creator feed error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return Array.isArray(data?.hits) ? data.hits : [];
+    });
+
+    const results = await Promise.allSettled(requests);
+    const dedup = new Map();
+
+    for (const result of results) {
+        if (result.status !== 'fulfilled') continue;
+        for (const card of result.value) {
+            const key = card?.id || getCharacterTavernPath(card);
+            if (!key || dedup.has(key)) continue;
+            dedup.set(key, card);
+        }
+    }
+
+    return [...dedup.values()].sort((left, right) => {
+        const leftDate = Date.parse(left?.lastUpdatedAt || left?.lastUpdateAt || left?.createdAt || 0) || 0;
+        const rightDate = Date.parse(right?.lastUpdatedAt || right?.lastUpdateAt || right?.createdAt || 0) || 0;
+        return rightDate - leftDate;
+    });
+}
+
+export async function getCharacterTavernLastUsedCards() {
+    const response = await characterTavernFetch(CT_LAST_USED_BASE, {
+        headers: {
+            Accept: 'application/json',
+        },
+    });
+
+    if (!response.ok) {
+        throw new Error(`Character Tavern last-used cards error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return Array.isArray(data) ? data : (Array.isArray(data?.cards) ? data.cards : []);
+}
+
+export async function getCharacterTavernFollowIds() {
+    const response = await characterTavernFetch(CT_FOLLOW_BASE, {
+        headers: {
+            Accept: 'application/json',
+        },
+    }, {
+        allowPublicAuth: true,
+        proxyChain: ['corsproxy_io', 'cors_lol', 'puter'],
+    });
+
+    if (!response.ok) {
+        throw new Error(`Character Tavern follow list error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return Array.isArray(data?.follows) ? data.follows : [];
+}
+
+export async function getCharacterTavernLibraryData(section = 'imported') {
+    const safeSection = String(section || 'imported').trim().toLowerCase() === 'created' ? 'created' : 'imported';
+    const response = await characterTavernFetch(`${CT_LIBRARY_BASE}?section=${encodeURIComponent(safeSection)}`, {
+        headers: {
+            Accept: 'text/html',
+        },
+    });
+
+    if (!response.ok) {
+        throw new Error(`Character Tavern library error: ${response.status}`);
+    }
+
+    const html = await response.text();
+    const data = parseCharacterTavernLibraryHtml(html);
+    const libraryCards = Array.isArray(data.libraryCards) ? data.libraryCards : [];
+    const createdCards = Array.isArray(data.createdCards) ? data.createdCards : [];
+
+    return {
+        libraryCards,
+        createdCards,
+        favoriteCards: [...libraryCards, ...createdCards].filter((card) => !!card?.isFavorite),
+        featuredCardIds: Array.isArray(data.featuredCardIds) ? data.featuredCardIds : [],
+        stats: data.stats && typeof data.stats === 'object' ? data.stats : {},
+    };
+}
+
 /**
  * Transform a Character Tavern card to BotBrowser format
  * @param {Object} node - Raw card data from API
  * @returns {Object} Transformed card
  */
 export function transformCharacterTavernCard(node) {
-    const imageUrl = getCharacterTavernImageUrl(node.path);
+    const path = getCharacterTavernPath(node);
+    const imageUrl = getCharacterTavernImageUrl(path);
     const creator = getCharacterTavernCreator(node);
-
-    // Use characterDefinition as the real description, tagline is just website meta
-    const description = node.characterDefinition || node.pageDescription || node.tagline || '';
+    const description = getCharacterTavernDefinition(node);
     const descPreview = description ? description.substring(0, 300) : '';
+    const creatorNotes = getCharacterTavernCreatorNotes(node);
 
     return {
-        id: node.id,
+        id: node.originalCardsId || node.id,
         name: node.name || node.inChatName || 'Unknown',
         creator,
         avatar_url: imageUrl,
         image_url: imageUrl,
         gallery_images: imageUrl ? [imageUrl] : [],
         tags: node.tags || [],
-        // Use actual character definition as description
         description: description,
         desc_preview: descPreview,
         desc_search: description,
-        // Character fields for detail modal display
-        personality: node.characterPersonality || '',
-        scenario: node.characterScenario || '',
-        first_message: node.characterFirstMessage || '',
-        mes_example: node.characterExampleMessages || '',
+        personality: node.definition_personality || node.characterPersonality || '',
+        scenario: node.definition_scenario || node.characterScenario || '',
+        first_message: node.definition_first_message || node.characterFirstMessage || '',
+        mes_example: node.definition_example_messages || node.characterExampleMessages || '',
         alternate_greetings: node.alternativeFirstMessage || [],
-        post_history_instructions: node.characterPostHistoryPrompt || '',
-        system_prompt: node.characterSystemPrompt || '',
-        creator_notes: node.pageDescription || node.tagline || '',
-        // Metadata
+        post_history_instructions: node.definition_post_history_prompt || node.characterPostHistoryPrompt || '',
+        system_prompt: node.definition_system_prompt || node.characterSystemPrompt || '',
+        creator_notes: creatorNotes,
         created_at: normalizeCtDate(node.createdAt),
-        updated_at: normalizeCtDate(node.lastUpdateAt),
-        nTokens: node.totalTokens || 0,
+        updated_at: normalizeCtDate(node.lastUpdatedAt || node.lastUpdateAt),
+        nTokens: node.totalTokens || node.tokenTotal || 0,
         possibleNsfw: node.isNSFW || false,
         service: 'character_tavern',
         sourceService: 'character_tavern_live',
@@ -412,23 +652,29 @@ export function transformCharacterTavernCard(node) {
         dislikes: node.dislikes || 0,
         messages: node.messages || node.analytics_messages || 0,
         analytics_messages: node.messages || node.analytics_messages || 0,
-        fullPath: node.path,
+        fullPath: path,
+        path,
         visibility: node.visibility || '',
         versionId: node.versionId || '',
         ownerCTId: node.ownerCTId || '',
         lorebookId: node.lorebookId || '',
+        userCardId: typeof node.id === 'number' ? node.id : 0,
+        isFavorite: !!node.isFavorite,
+        lastUsedAt: normalizeCtDate(node.lastUsedAt),
         // Store full data for import
         _rawData: {
-            characterDefinition: node.characterDefinition || '',
-            characterPersonality: node.characterPersonality || '',
-            characterScenario: node.characterScenario || '',
-            characterFirstMessage: node.characterFirstMessage || '',
-            characterExampleMessages: node.characterExampleMessages || '',
-            characterSystemPrompt: node.characterSystemPrompt || '',
-            characterPostHistoryPrompt: node.characterPostHistoryPrompt || '',
+            characterDefinition: description,
+            characterPersonality: node.definition_personality || node.characterPersonality || '',
+            characterScenario: node.definition_scenario || node.characterScenario || '',
+            characterFirstMessage: node.definition_first_message || node.characterFirstMessage || '',
+            characterExampleMessages: node.definition_example_messages || node.characterExampleMessages || '',
+            characterSystemPrompt: node.definition_system_prompt || node.characterSystemPrompt || '',
+            characterPostHistoryPrompt: node.definition_post_history_prompt || node.characterPostHistoryPrompt || '',
             alternativeFirstMessage: node.alternativeFirstMessage || [],
-            inChatName: node.inChatName || '',
-            creatorNotes: node.pageDescription || node.tagline || '',
+            inChatName: node.inChatName || node.name || '',
+            creatorNotes,
+            userCardId: typeof node.id === 'number' ? node.id : 0,
+            originalCardsId: node.originalCardsId || '',
         }
     };
 }

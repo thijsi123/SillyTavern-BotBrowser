@@ -5,6 +5,7 @@ const ANCHORHOLD_BASE_URL = 'https://partyintheanchorhold.neocities.org';
 const ANCHORHOLD_CONFIG_URL = `${ANCHORHOLD_BASE_URL}/config.json`;
 const ANCHORHOLD_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER];
 const ANCHORHOLD_ARTIFACT_PROXY_CHAIN = [PROXY_TYPES.NONE, PROXY_TYPES.CORS_LOL, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER];
+const ANCHORHOLD_ARTIFACT_TIMEOUT_MS = 3000;
 const ANCHORHOLD_PAGE_SIZE = 24;
 const ANCHORHOLD_CACHE_TTL = 5 * 60 * 1000;
 
@@ -12,6 +13,7 @@ let cachedConfig = null;
 let cachedConfigAt = 0;
 const pageCardCache = new Map();
 const embeddedCardMetadataCache = new Map();
+const embeddedCardMetadataInflight = new Map();
 
 function trimText(value) {
     return String(value || '').trim();
@@ -155,6 +157,7 @@ async function fetchAnchorholdArtifactResponse(url) {
     return proxiedFetch(url, {
         service: 'anchorhold_live',
         proxyChain: ANCHORHOLD_ARTIFACT_PROXY_CHAIN,
+        timeoutMs: ANCHORHOLD_ARTIFACT_TIMEOUT_MS,
         fetchOptions: {
             method: 'GET',
             headers: {
@@ -601,7 +604,7 @@ function normalizeEmbeddedCardPayload(payload, sourceUrl) {
     };
 }
 
-async function fetchEmbeddedCardMetadata(url) {
+export async function fetchEmbeddedCardMetadata(url) {
     const originalUrl = trimText(url);
     if (!originalUrl) return null;
 
@@ -611,6 +614,9 @@ async function fetchEmbeddedCardMetadata(url) {
     const cacheKey = resolvedUrl.toLowerCase();
     if (embeddedCardMetadataCache.has(cacheKey)) {
         return embeddedCardMetadataCache.get(cacheKey);
+    }
+    if (embeddedCardMetadataInflight.has(cacheKey)) {
+        return embeddedCardMetadataInflight.get(cacheKey);
     }
 
     const pending = (async () => {
@@ -634,18 +640,32 @@ async function fetchEmbeddedCardMetadata(url) {
             const normalized = normalizeEmbeddedCardPayload(payload, resolvedUrl);
             if (!normalized) return null;
 
-            return {
+            const result = {
                 ...normalized,
                 originalUrl,
                 resolvedUrl,
             };
+            embeddedCardMetadataCache.set(cacheKey, result);
+            return result;
         } catch {
             return null;
+        } finally {
+            embeddedCardMetadataInflight.delete(cacheKey);
         }
     })();
 
-    embeddedCardMetadataCache.set(cacheKey, pending);
-    return pending;
+    embeddedCardMetadataInflight.set(cacheKey, pending);
+    return await pending;
+}
+
+export function getCachedEmbeddedCardMetadata(url) {
+    const originalUrl = trimText(url);
+    if (!originalUrl) return null;
+
+    const resolvedUrl = resolveCardArtifactUrl(originalUrl);
+    if (!resolvedUrl) return null;
+
+    return embeddedCardMetadataCache.get(resolvedUrl.toLowerCase()) || null;
 }
 
 async function mapWithConcurrency(items, limit, iteratee) {
@@ -1296,7 +1316,8 @@ function dedupeCards(cards) {
     return out;
 }
 
-async function extractCardsFromPost(postEl) {
+async function extractCardsFromPost(postEl, options = {}) {
+    const { resolveEmbeddedMetadata = false } = options;
     const contentEl = postEl.querySelector('.post-content');
     if (!contentEl) return [];
 
@@ -1359,9 +1380,11 @@ async function extractCardsFromPost(postEl) {
         ]);
 
         let embeddedMeta = null;
-        for (const candidate of artifactCandidates) {
-            embeddedMeta = await fetchEmbeddedCardMetadata(candidate);
-            if (embeddedMeta) break;
+        if (resolveEmbeddedMetadata && artifactCandidates.length > 0) {
+            for (const candidate of artifactCandidates) {
+                embeddedMeta = await fetchEmbeddedCardMetadata(candidate);
+                if (embeddedMeta) break;
+            }
         }
 
         const entryCards = recognized.map((item, index) => buildProviderBackedCard(item.provider, postInfo, index, embeddedMeta));
@@ -1403,10 +1426,10 @@ async function fetchAnchorholdPageCards(feedPageNumber) {
         return pageCardCache.get(feedPageNumber) || [];
     }
 
-    const html = await fetchAnchorholdText(`${ANCHORHOLD_BASE_URL}/feed/page_${feedPageNumber}.html`);
+    const html = await fetchAnchorholdText(`${ANCHORHOLD_BASE_URL}/feed/page_${feedPageNumber}`);
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const posts = Array.from(doc.querySelectorAll('.post'));
-    const cardGroups = await mapWithConcurrency(posts, 4, (post) => extractCardsFromPost(post));
+    const cardGroups = await mapWithConcurrency(posts, 4, (post) => extractCardsFromPost(post, { resolveEmbeddedMetadata: false }));
     const cards = dedupeCards(cardGroups.flatMap((group) => group));
 
     pageCardCache.set(feedPageNumber, cards);
@@ -1527,4 +1550,6 @@ export function resetAnchorholdLiveCache() {
     cachedConfig = null;
     cachedConfigAt = 0;
     pageCardCache.clear();
+    embeddedCardMetadataCache.clear();
+    embeddedCardMetadataInflight.clear();
 }

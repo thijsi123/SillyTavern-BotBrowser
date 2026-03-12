@@ -5,6 +5,7 @@
 import { getAuthHeadersForService, proxiedFetch } from './corsProxy.js';
 
 const WYVERN_API_BASE = 'https://app.wyvern.chat/api';
+let wyvernMePromise = null;
 
 function getWyvernAuthHeaders(service = 'wyvern') {
     if (service === 'wyvern_lorebooks') {
@@ -45,10 +46,43 @@ async function fetchWyvernResponse(url, service = 'wyvern') {
     });
 }
 
+async function fetchWyvernMe() {
+    if (!wyvernMePromise) {
+        wyvernMePromise = (async () => {
+            const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/auth/me`, 'wyvern');
+            if (!response.ok) {
+                throw new Error(`Wyvern auth/me error: ${response.status}`);
+            }
+
+            return response.json();
+        })().catch((error) => {
+            wyvernMePromise = null;
+            throw error;
+        });
+    }
+
+    return wyvernMePromise;
+}
+
 function textOrEmpty(value) {
-    if (typeof value === 'string') return value.trim();
-    if (typeof value === 'number' || typeof value === 'bigint') return String(value).trim();
-    return '';
+    const text = typeof value === 'string'
+        ? value.trim()
+        : (typeof value === 'number' || typeof value === 'bigint')
+            ? String(value).trim()
+            : '';
+
+    if (!text) {
+        return '';
+    }
+
+    // Wyvern profiles can use "blank" Unicode filler names like Hangul Filler / Braille Blank.
+    // Treat those as empty so creator fallback logic can recover to vanity/Unknown instead.
+    const visibleText = text.replace(/[\s\u00A0\u1680\u180E\u2000-\u200F\u2028-\u202F\u205F\u2060\u3000\u3164\u2800\uFEFF]/g, '');
+    if (!visibleText) {
+        return '';
+    }
+
+    return text;
 }
 
 function normalizeWyvernGreeting(value) {
@@ -487,8 +521,8 @@ export async function searchWyvernLorebooks(options = {}) {
  * - tags, rating, avatar, creator, etc.
  */
 export function transformWyvernCard(node) {
-    const creatorName = node.creator?.displayName || node.creator?.vanityUrl || 'Unknown';
-    const creatorUrl = node.creator?.vanityUrl || node.creator?._id;
+    const creatorName = textOrEmpty(node.creator?.displayName) || textOrEmpty(node.creator?.vanityUrl) || 'Unknown';
+    const creatorUrl = textOrEmpty(node.creator?.vanityUrl) || textOrEmpty(node.creator?._id);
     const creatorUid = node.creator?.uid || node.creator?._id || null;
     const creatorAvatarUrl = node.creator?.photoURL || node.creator?.avatar || '';
 
@@ -608,7 +642,7 @@ export async function getWyvernLorebook(lorebookId) {
 
 export function transformFullWyvernCharacter(node) {
     const base = transformWyvernCard(node);
-    const creatorName = base.creator || 'Unknown';
+    const creatorName = textOrEmpty(base.creator) || 'Unknown';
     const rawData = buildWyvernRawData(node, creatorName);
 
     return {
@@ -647,7 +681,7 @@ export function transformFullWyvernCharacter(node) {
         token_count: Number(node.token_count || 0) || 0,
         created_at: node.created_at,
         updated_at: node.updated_at,
-        creatorUrl: node.creator?.vanityUrl || node.creator?._id || '',
+        creatorUrl: textOrEmpty(node.creator?.vanityUrl) || textOrEmpty(node.creator?._id) || '',
         creatorUid: node.creator?.uid || node.creator?._id || null,
         creatorAvatarUrl: node.creator?.photoURL || node.creator?.avatar || '',
         service: 'wyvern',
@@ -694,7 +728,7 @@ export function transformFullWyvernLorebook(node) {
  * Transform Wyvern lorebook to BotBrowser format
  */
 export function transformWyvernLorebook(node) {
-    const creatorName = node.creator?.displayName || node.creator?.vanityUrl || 'Unknown';
+    const creatorName = textOrEmpty(node.creator?.displayName) || textOrEmpty(node.creator?.vanityUrl) || 'Unknown';
     const creatorUid = node.creator?.uid || node.creator?._id || null;
     const fullDescription = node.description || '';
     const characterBook = buildWyvernLorebookCharacterBook(node);
@@ -706,7 +740,7 @@ export function transformWyvernLorebook(node) {
         name: node.name,
         creator: creatorName,
         creatorUid: creatorUid,
-        creatorUrl: node.creator?.vanityUrl || node.creator?._id || null,
+        creatorUrl: textOrEmpty(node.creator?.vanityUrl) || textOrEmpty(node.creator?._id) || null,
         creatorAvatarUrl: node.creator?.photoURL || node.creator?.avatar || '',
         avatar_url: node.photoURL,
         image_url: node.photoURL,
@@ -888,4 +922,359 @@ export async function fetchWyvernCreatorCards(options = {}) {
         console.error('[Bot Browser] Wyvern Creator API error:', error);
         throw error;
     }
+}
+
+function getWyvernFeedCharacterNode(item) {
+    if (!item || typeof item !== 'object') return null;
+
+    const candidate = item.data?.id
+        ? item.data
+        : item.character?.id
+            ? item.character
+            : item;
+
+    return candidate && typeof candidate === 'object' ? candidate : null;
+}
+
+function getWyvernListCharacterNode(item) {
+    if (!item || typeof item !== 'object') return null;
+
+    const candidate = item.id
+        ? item
+        : item.character?.id
+            ? item.character
+            : item.data?.id
+                ? item.data
+                : item.content?.id
+                    ? item.content
+                    : item.object?.id
+                        ? item.object
+                        : item.item?.id
+                            ? item.item
+                            : item.characterData?.id
+                                ? item.characterData
+                                : null;
+
+    return candidate && typeof candidate === 'object' ? candidate : null;
+}
+
+function normalizeWyvernCharacterListResponse(data) {
+    const collections = [
+        Array.isArray(data?.characters) ? data.characters : [],
+        Array.isArray(data?.results) ? data.results : [],
+        Array.isArray(data?.items) ? data.items : [],
+    ];
+
+    const characters = collections
+        .flat()
+        .map((item) => getWyvernListCharacterNode(item))
+        .filter((item) => item && item.id);
+
+    const total = Number(data?.total || data?.count || characters.length || 0) || 0;
+    const page = Number(data?.page || 1) || 1;
+    const limit = Number(data?.limit || data?.pageSize || characters.length || 24) || 24;
+
+    return {
+        characters,
+        total,
+        hasMore: data?.hasMore === true || (page * limit) < total,
+        page,
+        limit,
+    };
+}
+
+function normalizeWyvernLorebookListResponse(data) {
+    const collections = [
+        Array.isArray(data?.lorebooks) ? data.lorebooks : [],
+        Array.isArray(data?.results) ? data.results : [],
+        Array.isArray(data?.items) ? data.items : [],
+    ];
+
+    const lorebooks = collections
+        .flat()
+        .map((item) => {
+            if (!item || typeof item !== 'object') return null;
+            return item.id
+                ? item
+                : item.lorebook?.id
+                    ? item.lorebook
+                    : item.data?.id
+                        ? item.data
+                        : item.content?.id
+                            ? item.content
+                            : null;
+        })
+        .filter((item) => item && item.id);
+
+    const total = Number(data?.total || data?.count || lorebooks.length || 0) || 0;
+    const page = Number(data?.page || 1) || 1;
+    const limit = Number(data?.limit || data?.pageSize || lorebooks.length || 24) || 24;
+
+    return {
+        lorebooks,
+        total,
+        hasMore: data?.hasMore === true || (page * limit) < total,
+        page,
+        limit,
+    };
+}
+
+export async function fetchWyvernFollowingCharacters(options = {}) {
+    const {
+        page = 1,
+        limit = 24,
+        sort = 'created_at',
+        order = 'DESC',
+    } = options;
+
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    params.set('contentType', 'character');
+    params.set('source', 'following');
+    params.set('sort', String(sort || 'created_at'));
+    params.set('order', String(order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC');
+
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/unified-feed?${params.toString()}`, 'wyvern');
+    if (!response.ok) {
+        throw new Error(`Wyvern following feed error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const characters = items
+        .map((item) => getWyvernFeedCharacterNode(item))
+        .filter((item) => item && item.id)
+        .map((item) => ({
+            ...item,
+            _feedItemId: item._feedItemId || item.id,
+            _feedUpdatedAt: item.updated_at || item.created_at || '',
+        }));
+
+    return {
+        characters,
+        total: Number(data?.total || characters.length || 0) || 0,
+        hasMore: data?.hasMore === true || (page * limit) < Number(data?.total || 0),
+        page: Number(data?.page || page) || page,
+        limit: Number(data?.limit || limit) || limit,
+    };
+}
+
+export async function fetchWyvernUserCharacters(options = {}) {
+    const {
+        page = 1,
+        limit = 24,
+        sort = 'created_at',
+        order = 'DESC',
+        includeDrafts = true,
+        includePrivate = true,
+    } = options;
+
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    params.set('sort', String(sort || 'created_at'));
+    params.set('order', String(order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC');
+    params.set('includeDrafts', includeDrafts ? 'true' : 'false');
+    params.set('includePrivate', includePrivate ? 'true' : 'false');
+
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/characters/user/me?${params.toString()}`, 'wyvern');
+    if (!response.ok) {
+        throw new Error(`Wyvern my characters error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const characters = Array.isArray(data?.characters)
+        ? data.characters
+        : Array.isArray(data?.items)
+            ? data.items.map((item) => getWyvernFeedCharacterNode(item)).filter((item) => item && item.id)
+            : [];
+
+    const total = Number(data?.total || characters.length || 0) || 0;
+
+    return {
+        characters,
+        total,
+        hasMore: data?.hasMore === true || (page * limit) < total,
+        page: Number(data?.page || page) || page,
+        limit: Number(data?.limit || limit) || limit,
+    };
+}
+
+export async function fetchWyvernLikedCharacters(options = {}) {
+    const {
+        page = 1,
+        limit = 24,
+        sort = 'created_at',
+        order = 'DESC',
+        includeDrafts = true,
+        includePrivate = true,
+    } = options;
+
+    const me = await fetchWyvernMe();
+    const userId = textOrEmpty(me?.uid || me?._id || me?.userId || me?.id);
+    if (!userId) {
+        throw new Error('Wyvern liked characters error: missing user id');
+    }
+
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    params.set('sort', String(sort || 'created_at'));
+    params.set('order', String(order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC');
+    params.set('includeDrafts', includeDrafts ? 'true' : 'false');
+    params.set('includePrivate', includePrivate ? 'true' : 'false');
+
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/user-content/${userId}/liked-characters?${params.toString()}`, 'wyvern');
+    if (!response.ok) {
+        throw new Error(`Wyvern liked characters error: ${response.status}`);
+    }
+
+    return normalizeWyvernCharacterListResponse(await response.json());
+}
+
+export async function fetchWyvernBookmarkedCharacters(options = {}) {
+    const {
+        page = 1,
+        limit = 24,
+        sort = 'created_at',
+        order = 'DESC',
+    } = options;
+
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    params.set('sort', String(sort || 'created_at'));
+    params.set('order', String(order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC');
+
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/inventory/collection/characters?${params.toString()}`, 'wyvern');
+    if (!response.ok) {
+        throw new Error(`Wyvern bookmarked characters error: ${response.status}`);
+    }
+
+    return normalizeWyvernCharacterListResponse(await response.json());
+}
+
+export async function fetchWyvernUserLorebooks(options = {}) {
+    const {
+        page = 1,
+        limit = 24,
+        sort = 'created_at',
+        order = 'DESC',
+        includeDrafts = true,
+        includePrivate = true,
+    } = options;
+
+    const me = await fetchWyvernMe();
+    const userId = textOrEmpty(me?.uid || me?._id || me?.userId || me?.id);
+    if (!userId) {
+        throw new Error('Wyvern my lorebooks error: missing user id');
+    }
+
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    params.set('sort', String(sort || 'created_at'));
+    params.set('order', String(order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC');
+    params.set('includeDrafts', includeDrafts ? 'true' : 'false');
+    params.set('includePrivate', includePrivate ? 'true' : 'false');
+
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/user-content/${userId}/lorebooks?${params.toString()}`, 'wyvern');
+    if (!response.ok) {
+        throw new Error(`Wyvern my lorebooks error: ${response.status}`);
+    }
+
+    return normalizeWyvernLorebookListResponse(await response.json());
+}
+
+export async function fetchWyvernBookmarkedLorebooks(options = {}) {
+    const {
+        page = 1,
+        limit = 24,
+        sort = 'created_at',
+        order = 'DESC',
+    } = options;
+
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    params.set('sort', String(sort || 'created_at'));
+    params.set('order', String(order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC');
+
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/inventory/collection/lorebooks?${params.toString()}`, 'wyvern');
+    if (!response.ok) {
+        throw new Error(`Wyvern bookmarked lorebooks error: ${response.status}`);
+    }
+
+    return normalizeWyvernLorebookListResponse(await response.json());
+}
+
+export async function searchWyvernCollections(options = {}) {
+    const {
+        page = 1,
+        limit = 20,
+        sort = 'created_at',
+        order = 'DESC',
+        tags = [],
+        mineOnly = false,
+    } = options;
+
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+
+    if (mineOnly) {
+        const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/content-collections/user/me?${params.toString()}`, 'wyvern');
+        if (!response.ok) {
+            throw new Error(`Wyvern my collections error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const collections = Array.isArray(data?.collections) ? data.collections : [];
+        const total = Number(data?.total || collections.length || 0) || 0;
+        return {
+            collections,
+            total,
+            page: Number(data?.page || page) || page,
+            limit: Number(data?.limit || limit) || limit,
+            hasMore: data?.hasMore === true || (page * limit) < total,
+        };
+    }
+
+    params.set('sort', String(sort || 'created_at'));
+    params.set('order', String(order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC');
+    params.set('search', '');
+    params.set('tags', Array.isArray(tags) ? tags.filter(Boolean).join(',') : '');
+    params.set('rating', 'none');
+
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/content-collections/public?${params.toString()}`, 'wyvern');
+    if (!response.ok) {
+        throw new Error(`Wyvern collections error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const collections = Array.isArray(data?.collections) ? data.collections : [];
+    const total = Number(data?.total || collections.length || 0) || 0;
+
+    return {
+        collections,
+        total,
+        page: Number(data?.page || page) || page,
+        limit: Number(data?.limit || limit) || limit,
+        hasMore: (page * limit) < total,
+    };
+}
+
+export async function getWyvernCollection(collectionId) {
+    const normalizedId = String(collectionId || '').trim();
+    if (!normalizedId) {
+        throw new Error('Wyvern collection ID is required');
+    }
+
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/content-collections/${normalizedId}`, 'wyvern');
+    if (!response.ok) {
+        throw new Error(`Wyvern collection detail error: ${response.status}`);
+    }
+
+    return response.json();
 }

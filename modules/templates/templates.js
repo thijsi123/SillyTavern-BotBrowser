@@ -71,7 +71,7 @@ function formatCompact(num) {
 export function getOriginalMenuHTML(recentlyViewed) {
     return `
         <div class="bot-browser-header">
-            <h3>Bot Browser <span style="font-size: 0.6em; font-weight: 400; color: rgba(255, 255, 255, 0.6);">v2.0</span></h3>
+            <h3>Bot Browser <span style="font-size: 0.6em; font-weight: 400; color: rgba(255, 255, 255, 0.6);">v2.0.1</span></h3>
             <div class="bot-browser-tabs">
                 <button class="bot-browser-tab active" data-tab="bots">Bots</button>
                 <button class="bot-browser-tab" data-tab="lorebooks">Lorebooks</button>
@@ -158,7 +158,7 @@ export function getOriginalMenuHTML(recentlyViewed) {
                     <span>Backyard.ai</span>
                 </button>
                 <button class="bot-browser-source" data-source="pygmalion">
-                    <div class="bot-browser-source-icon" style="background-image: url('https://files.catbox.moe/sw0crk.png'); background-size: 85%; background-position: center; background-repeat: no-repeat;"></div>
+                    <div class="bot-browser-source-icon" style="background-image: url('https://pygmalion.chat/icons/apple-touch-icon.png'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
                     <span>Pygmalion</span>
                 </button>
                 <button class="bot-browser-source" data-source="character_tavern">
@@ -174,7 +174,7 @@ export function getOriginalMenuHTML(recentlyViewed) {
                     <span>MLPchag</span>
                 </button>
                 <button class="bot-browser-source" data-source="risuai_realm">
-                    <div class="bot-browser-source-icon" style="background-image: url('https://files.catbox.moe/216rab.webp'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
+                    <div class="bot-browser-source-icon" style="background-image: url('https://realm.risuai.net/icon.png'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
                     <span>Risuai Realm</span>
                 </button>
                 <button class="bot-browser-source" data-source="charavault">
@@ -285,7 +285,7 @@ export function getOriginalMenuHTML(recentlyViewed) {
                     <span>Backyard.ai</span>
                 </button>
                 <button class="bot-browser-source" data-source="pygmalion_trending">
-                    <div class="bot-browser-source-icon" style="background-image: url('https://files.catbox.moe/sw0crk.png'); background-size: 85%; background-position: center; background-repeat: no-repeat;"></div>
+                    <div class="bot-browser-source-icon" style="background-image: url('https://pygmalion.chat/icons/apple-touch-icon.png'); background-size: cover; background-position: center; background-repeat: no-repeat;"></div>
                     <span>Pygmalion</span>
                 </button>
                 <button class="bot-browser-source" data-source="risuai_realm_trending">

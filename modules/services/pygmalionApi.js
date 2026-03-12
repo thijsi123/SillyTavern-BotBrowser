@@ -3,7 +3,8 @@
 
 import { getAuthHeadersForService, proxiedFetch } from './corsProxy.js';
 
-const PYGMALION_API_BASE = 'https://server.pygmalion.chat/galatea.v1.PublicCharacterService';
+const PYGMALION_SERVER_BASE = 'https://server.pygmalion.chat';
+const PYGMALION_API_BASE = `${PYGMALION_SERVER_BASE}/galatea.v1.PublicCharacterService`;
 
 /**
  * Sort type options for Pygmalion
@@ -119,6 +120,24 @@ export async function getPygmalionCharacter(characterId, versionId = '') {
     return result.character || result;
 }
 
+export async function getPygmalionCharactersListing() {
+    return fetchPygmalionConnectGet('galatea.v1.PublicCharacterService/CharactersListing', {}, { auth: false });
+}
+
+export async function getPygmalionFeaturedCharacters() {
+    const result = await fetchPygmalionConnectGet('galatea.v1.PublicCharacterService/GetRandomFeaturedCharacters', {}, { auth: false });
+    return {
+        characters: result.characters || [],
+    };
+}
+
+export async function getPygmalionAvailableTags() {
+    const result = await fetchPygmalionConnectGet('galatea.v1.PublicCharacterService/CharacterAvailableTags', {}, { auth: false });
+    return {
+        tags: result.tags || [],
+    };
+}
+
 export async function getPygmalionExportCharacter(characterId) {
     const response = await proxiedFetch(`https://server.pygmalion.chat/api/export/character/${encodeURIComponent(characterId)}/v2`, {
         service: 'pygmalion',
@@ -133,6 +152,55 @@ export async function getPygmalionExportCharacter(characterId) {
     if (!response.ok) {
         const text = await response.text();
         throw new Error(`Pygmalion export error: ${response.status} - ${text}`);
+    }
+
+    return response.json();
+}
+
+async function fetchPygmalionConnectGet(path, message = {}, { auth = false } = {}) {
+    const params = new URLSearchParams({
+        connect: 'v1',
+        encoding: 'json',
+        message: JSON.stringify(message || {}),
+    });
+
+    const response = await proxiedFetch(`${PYGMALION_SERVER_BASE}/${path}?${params.toString()}`, {
+        service: 'pygmalion',
+        fetchOptions: {
+            method: 'GET',
+            headers: {
+                Accept: '*/*',
+                ...(auth ? getAuthHeadersForService('pygmalion') : {}),
+            },
+        },
+    });
+
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Pygmalion API error: ${response.status} - ${text}`);
+    }
+
+    return response.json();
+}
+
+async function fetchPygmalionConnectPost(path, body = {}, { auth = true } = {}) {
+    const response = await proxiedFetch(`${PYGMALION_SERVER_BASE}/${path}`, {
+        service: 'pygmalion',
+        fetchOptions: {
+            method: 'POST',
+            headers: {
+                'Accept': '*/*',
+                'Content-Type': 'application/json',
+                'Connect-Protocol-Version': '1',
+                ...(auth ? getAuthHeadersForService('pygmalion') : {}),
+            },
+            body: JSON.stringify(body || {}),
+        },
+    });
+
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Pygmalion API error: ${response.status} - ${text}`);
     }
 
     return response.json();
@@ -209,6 +277,37 @@ export async function getPygmalionCharactersByOwner(userId, options = {}) {
     };
 }
 
+export async function getPygmalionStarredCharacters() {
+    const result = await fetchPygmalionConnectPost('galatea.v1.UserCharacterService/CharactersStarred', {}, { auth: true });
+    return {
+        characters: result.characters || [],
+        totalItems: parseInt(result.totalItems) || (result.characters?.length || 0),
+    };
+}
+
+export async function getPygmalionBookmarkedCharacters() {
+    const result = await fetchPygmalionConnectPost('galatea.v1.UserCharacterService/CharactersBookmarked', {}, { auth: true });
+    return {
+        characters: result.characters || [],
+        totalItems: parseInt(result.totalItems) || (result.characters?.length || 0),
+    };
+}
+
+export async function getPygmalionUserCharacters() {
+    const result = await fetchPygmalionConnectPost('galatea.v1.UserCharacterService/UserCharacters', {}, { auth: true });
+    return {
+        characters: result.characters || [],
+        totalItems: parseInt(result.totalItems) || (result.characters?.length || 0),
+    };
+}
+
+export async function getPygmalionFollowedUsers() {
+    const result = await fetchPygmalionConnectPost('galatea.v1.UserService/GetFollowedUsers', {}, { auth: true });
+    return {
+        users: result.users || [],
+    };
+}
+
 /**
  * Transform Pygmalion character to BotBrowser card format
  * @param {Object} char - Pygmalion character object from search
@@ -224,7 +323,8 @@ export function transformPygmalionCard(char) {
         creatorId: char.owner?.id || '',
         creatorUsername: char.owner?.username || '',
         avatar_url: char.avatarUrl || '',
-        image_url: `https://pygmalion.chat/chat/${char.id}`,
+        image_url: char.avatarUrl || '',
+        source_url: `https://pygmalion.chat/chat/${char.id}`,
         tags: tags,
         description: char.description || '',
         desc_preview: char.description ? char.description.substring(0, 200) : '',

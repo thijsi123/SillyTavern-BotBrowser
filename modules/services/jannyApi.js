@@ -673,15 +673,19 @@ export async function searchJannyCharacters(options = {}) {
  * @param {string} fallbackName - Visible card name used to recover the canonical page slug
  * @returns {Promise<Object>} Character data
  */
-export async function fetchJannyCharacterDetails(characterId, slug, fallbackName = '') {
+export async function fetchJannyCharacterDetails(characterId, slug, fallbackName = '', options = {}) {
     const normalizedId = String(characterId || '').trim();
     if (!normalizedId) {
         throw new Error('JannyAI character ID is required');
     }
 
     const cacheKey = `${normalizedId}:${normalizeJannySlugValue(slug)}`;
-    if (jannyCharacterDetailsCache.has(cacheKey)) {
-        return jannyCharacterDetailsCache.get(cacheKey);
+    const forceRefresh = options?.forceRefresh === true;
+    if (!forceRefresh && jannyCharacterDetailsCache.has(cacheKey)) {
+        const cached = jannyCharacterDetailsCache.get(cacheKey);
+        if (hasRichJannyDefinitionPayload(cached)) {
+            return cached;
+        }
     }
 
     const characterUrl = getJannyCharacterUrl(normalizedId, slug, fallbackName);
@@ -804,6 +808,36 @@ function normalizeJannyDefinitionLabel(value) {
         .replace(/:+$/g, '')
         .trim()
         .toLowerCase();
+}
+
+function normalizeJannyCompareText(value) {
+    return normalizeJannyDefinitionValue(value)
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function hasRichJannyDefinitionPayload(value) {
+    const record = value?.character || value || {};
+    const personality = normalizeJannyDefinitionValue(record?.personality || '');
+    const scenario = normalizeJannyDefinitionValue(record?.scenario || '');
+    const firstMessage = normalizeJannyDefinitionValue(record?.firstMessage || record?.first_message || '');
+    const exampleDialogs = normalizeJannyDefinitionValue(record?.exampleDialogs || record?.example_dialogs || '');
+    const websiteDescription = normalizeJannyDefinitionValue(
+        record?.website_description || record?.description || record?.desc_preview || '',
+    );
+
+    if (personality.length >= 250) return true;
+    if (firstMessage.length >= 180) return true;
+    if (exampleDialogs.length >= 180) return true;
+    if (
+        scenario.length >= 200
+        && normalizeJannyCompareText(scenario) !== normalizeJannyCompareText(websiteDescription)
+    ) {
+        return true;
+    }
+
+    return false;
 }
 
 function extractJannyDefinitionFieldValue(paragraph, labelNode) {

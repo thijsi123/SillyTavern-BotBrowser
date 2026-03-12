@@ -23,7 +23,19 @@ const PROXY_CONFIGS = {
     },
     [PROXY_TYPES.CORSPROXY_IO]: {
         name: 'corsproxy.io',
-        buildUrl: (targetUrl) => `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`,
+        buildUrl: (targetUrl, options = {}) => {
+            let proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
+            const reqHeaders = options?.reqHeaders && typeof options.reqHeaders === 'object'
+                ? options.reqHeaders
+                : {};
+
+            for (const [header, value] of Object.entries(reqHeaders)) {
+                if (value == null || value === '') continue;
+                proxyUrl += `&reqHeaders=${encodeURIComponent(`${header}:${value}`)}`;
+            }
+
+            return proxyUrl;
+        },
         rateLimit: 'Unknown, prone to 429 errors'
     },
     [PROXY_TYPES.CORS_LOL]: {
@@ -294,12 +306,12 @@ async function puterFetch(url, options = {}, timeoutMs = 15000) {
  * @param {string} targetUrl - Target URL to proxy
  * @returns {string|null} Proxied URL or null if not applicable
  */
-export function buildProxyUrl(proxyType, targetUrl) {
+export function buildProxyUrl(proxyType, targetUrl, options = {}) {
     const config = PROXY_CONFIGS[proxyType];
     if (!config || !config.buildUrl) {
         return null;
     }
-    return config.buildUrl(targetUrl);
+    return config.buildUrl(targetUrl, options);
 }
 
 /**
@@ -401,7 +413,9 @@ export async function proxiedFetch(url, options = {}) {
                 debugLog(`[CORS Proxy] Trying Puter.js fetch for: ${url}`);
                 response = await puterFetch(url, directFetchOptions, timeoutMs);
             } else {
-                const proxyUrl = buildProxyUrl(proxyType, url);
+                const proxyUrl = buildProxyUrl(proxyType, url, {
+                    reqHeaders: hasAuthHeaders && allowPublicAuth ? authHeaderObj : null,
+                });
                 if (!proxyUrl) {
                     continue;
                 }
