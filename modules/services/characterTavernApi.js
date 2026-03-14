@@ -279,6 +279,126 @@ function parseCharacterTavernAuthorCards(doc, username) {
     return [...dedup.values()];
 }
 
+function parseCharacterTavernAuthorHtml(html, username) {
+    const rawCards = parseCharacterTavernLiteral(extractCharacterTavernLiteral(html, 'cards'), []);
+    if (!Array.isArray(rawCards) || rawCards.length === 0) return [];
+
+    const dedup = new Map();
+
+    for (const entry of rawCards) {
+        const node = entry?.cards && typeof entry.cards === 'object' ? entry.cards : entry;
+        if (!node || typeof node !== 'object') continue;
+
+        const transformed = transformCharacterTavernCard(node);
+        const path = transformed?.fullPath || transformed?.path || getCharacterTavernPath(node);
+        if (!path || dedup.has(path)) continue;
+
+        if (!transformed.creator || transformed.creator === 'Unknown') {
+            transformed.creator = username;
+        }
+
+        transformed.sourceService = 'character_tavern_author_page';
+        dedup.set(path, transformed);
+    }
+
+    return [...dedup.values()];
+}
+
+function dereferenceCharacterTavernData(entries, value, seen = new Set()) {
+    if (value === -1) return null;
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && entries[value] !== undefined) {
+        return resolveCharacterTavernData(entries, value, seen);
+    }
+
+    if (Array.isArray(value)) {
+        return value.map((item) => dereferenceCharacterTavernData(entries, item, seen));
+    }
+
+    return value;
+}
+
+function resolveCharacterTavernData(entries, index, seen = new Set()) {
+    if (!Array.isArray(entries) || typeof index !== 'number' || index < 0 || entries[index] === undefined) return null;
+    if (seen.has(index)) return null;
+
+    const node = entries[index];
+    if (node == null || typeof node !== 'object') return node;
+
+    seen.add(index);
+    try {
+        if (Array.isArray(node)) {
+            return node.map((item) => dereferenceCharacterTavernData(entries, item, seen));
+        }
+
+        const output = {};
+        for (const [key, value] of Object.entries(node)) {
+            output[key] = dereferenceCharacterTavernData(entries, value, seen);
+        }
+        return output;
+    } finally {
+        seen.delete(index);
+    }
+}
+
+function parseCharacterTavernDataArray(payload) {
+    const nodeData = payload?.nodes?.[1]?.data
+        || payload?.nodes?.[0]?.data
+        || payload?.data
+        || null;
+
+    if (!Array.isArray(nodeData)) return { nodeData: null, root: null };
+
+    return {
+        nodeData,
+        root: resolveCharacterTavernData(nodeData, 0) || null,
+    };
+}
+
+function parseCharacterTavernAuthorDataPayload(payload, username) {
+    const { root } = parseCharacterTavernDataArray(payload);
+    if (!root || typeof root !== 'object') return null;
+
+    const rawCards = Array.isArray(root.cards) ? root.cards : [];
+    const rawCount = Number(rawCards.length || 0);
+    const spicyCount = Number(root.spicyCount || 0);
+    const estimatedCardsCount = spicyCount > 0 ? Math.max(rawCount, spicyCount + 1) : rawCount;
+    const dedup = new Map();
+
+    for (const entry of rawCards) {
+        const node = entry?.cards && typeof entry.cards === 'object' ? entry.cards : entry;
+        if (!node || typeof node !== 'object') continue;
+
+        const transformed = transformCharacterTavernCard(node);
+        const path = transformed?.fullPath || transformed?.path || getCharacterTavernPath(node);
+        if (!path || dedup.has(path)) continue;
+
+        if (!transformed.creator || transformed.creator === 'Unknown') {
+            transformed.creator = username || root.username || root.displayName || 'Unknown';
+        }
+
+        transformed.sourceService = 'character_tavern_author_page';
+        dedup.set(path, transformed);
+    }
+
+    return {
+        profile: {
+            username: root.username || username,
+            displayName: root.displayName || root.username || username,
+            avatarURL: root.avatarURL || '',
+            bannerURL: root.bannerURL || '',
+            cardsCount: estimatedCardsCount,
+            spicyCount,
+            followersCount: root.followers != null ? String(root.followers) : '',
+            messages: root.messages != null ? String(root.messages) : '',
+            chats: root.downloads != null ? String(root.downloads) : '',
+            bio: typeof root.bio === 'string' ? root.bio.trim() : '',
+            authorUserId: root.authorUserId || '',
+            isFollowing: !!root.isFollowing,
+        },
+        cards: [...dedup.values()],
+    };
+}
+
 /**
  * Search Character Tavern for cards
  * @param {Object} options - Search options
@@ -460,7 +580,28 @@ export async function getCharacterTavernLorebook(id) {
 export async function getCharacterTavernAuthorProfile(username) {
     if (!username) throw new Error('Character Tavern username is required');
 
-    const response = await characterTavernFetch(`${CT_SITE_BASE}/author/${encodeURIComponent(username)}`, {
+    const trimmedUsername = String(username).trim();
+
+    try {
+        const dataUrl = `${CT_SITE_BASE}/author/${encodeURIComponent(trimmedUsername)}/__data.json?x-sveltekit-invalidated=01`;
+        const dataResponse = await characterTavernFetch(dataUrl, {
+            headers: {
+                Accept: 'application/json',
+            },
+        });
+
+        if (dataResponse.ok) {
+            const payload = await dataResponse.json();
+            const parsed = parseCharacterTavernAuthorDataPayload(payload, trimmedUsername);
+            if (parsed?.cards?.length) {
+                return parsed;
+            }
+        }
+    } catch (error) {
+        console.warn('[Bot Browser] Character Tavern author data fetch failed, falling back to HTML:', error);
+    }
+
+    const response = await characterTavernFetch(`${CT_SITE_BASE}/author/${encodeURIComponent(trimmedUsername)}`, {
         headers: {
             Accept: 'text/html',
         },
@@ -473,26 +614,30 @@ export async function getCharacterTavernAuthorProfile(username) {
     const html = await response.text();
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
-    const displayName = doc.querySelector('h1')?.textContent?.trim() || username;
+    const displayName = doc.querySelector('h1')?.textContent?.trim() || trimmedUsername;
     const bannerStyle = doc.querySelector('[style*="background-image"]')?.getAttribute('style') || '';
     const bannerMatch = bannerStyle.match(/background-image:\s*url\(([^)]+)\)/i);
     const avatarNode = [...doc.querySelectorAll('img')].find((img) => (img.getAttribute('alt') || '').trim() === displayName);
-    const cards = parseCharacterTavernAuthorCards(doc, username);
-    const cardsCount = Number(cards.length || 0);
+    const cards = parseCharacterTavernAuthorHtml(html, trimmedUsername);
+    const fallbackCards = cards.length > 0 ? cards : parseCharacterTavernAuthorCards(doc, trimmedUsername);
+    const bioNode = [...doc.querySelectorAll('p')]
+        .find((node) => node.textContent?.trim() && node.closest('aside, section, div'));
+    const cardsCount = Number(fallbackCards.length || 0);
 
     return {
         profile: {
-            username,
+            username: trimmedUsername,
             displayName,
             avatarURL: avatarNode?.getAttribute('src') || '',
             bannerURL: bannerMatch?.[1] || '',
-            cardsCount,
+            cardsCount: cardsCount || Number(parseCharacterTavernMetric(doc, 'cards')) || 0,
+            spicyCount: Number(parseCharacterTavernMetric(doc, 'spicy')) || 0,
             followersCount: parseCharacterTavernMetric(doc, 'followers'),
             messages: parseCharacterTavernMetric(doc, 'messages'),
             chats: parseCharacterTavernMetric(doc, 'chats'),
-            bio: doc.querySelector('aside p.text-xs')?.textContent?.trim() || '',
+            bio: doc.querySelector('aside p.text-xs')?.textContent?.trim() || bioNode?.textContent?.trim() || '',
         },
-        cards,
+        cards: fallbackCards,
     };
 }
 

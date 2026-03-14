@@ -88,7 +88,7 @@ import {
 } from './modules/services/authManager.js';
 
 // Extension version (from manifest.json)
-const EXTENSION_VERSION = '2.0.2';
+const EXTENSION_VERSION = '2.0.3';
 
 // Extension name and settings
 const extensionName = 'BotBrowser';
@@ -2120,6 +2120,25 @@ async function getRandomCardFromSameService() {
 }
 
 const BOT_BROWSER_RESTORE_BAR_POSITION_KEY = 'botbrowser_restore_bar_position_v1';
+const BOT_BROWSER_STANDALONE_TAB_ID_KEY = 'botbrowser_standalone_tab_id_v1';
+
+function getBotBrowserStandaloneTabId() {
+    try {
+        let tabId = sessionStorage.getItem(BOT_BROWSER_STANDALONE_TAB_ID_KEY);
+        if (!tabId) {
+            tabId = `bbtab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+            sessionStorage.setItem(BOT_BROWSER_STANDALONE_TAB_ID_KEY, tabId);
+        }
+        return tabId;
+    } catch {
+        return 'botbrowser_default_tab';
+    }
+}
+
+function isStandaloneMessageForThisTab(msg) {
+    const targetTabId = String(msg?.targetTabId || '').trim();
+    return !targetTabId || targetTabId === getBotBrowserStandaloneTabId();
+}
 
 function loadStandaloneRestoreBarPosition() {
     try {
@@ -2172,6 +2191,7 @@ async function openStandaloneBrowser() {
         // The standalone iframe can read fresh request headers from the live SillyTavern context,
         // so passing a query-string CSRF token here only creates a stale-token failure mode.
         const url = new URL('browser.html', import.meta.url);
+        url.searchParams.set('targetTabId', getBotBrowserStandaloneTabId());
 
         // Create fullscreen overlay container
         const overlay = document.createElement('div');
@@ -2677,6 +2697,110 @@ async function openStandaloneBrowser() {
 function setupStandaloneImportBridge() {
     let refreshTimer = null;
     let worldInfoRefreshTimer = null;
+    let standaloneRestorePoll = null;
+
+    const clearStandaloneRestorePoll = () => {
+        if (standaloneRestorePoll) {
+            clearInterval(standaloneRestorePoll);
+            standaloneRestorePoll = null;
+        }
+    };
+
+    const isElementVisible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) {
+            return false;
+        }
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    };
+
+    const hasActiveStandaloneBlockingPopup = () => {
+        const shadowPopup = document.getElementById('shadow_popup');
+        if (isElementVisible(shadowPopup)) return true;
+
+        const dialogPopups = Array.from(document.querySelectorAll('dialog.popup[open], dialog[open].popup, dialog[open]'));
+        return dialogPopups.some(isElementVisible);
+    };
+
+    const watchStandaloneImportPopups = () => {
+        clearStandaloneRestorePoll();
+
+        const startedAt = Date.now();
+        let importFinished = false;
+        let sawPopup = false;
+        let minimizedForPopup = false;
+
+        const tick = () => {
+            const activeControls = window.__botBrowserStandaloneControls;
+            if (!activeControls) {
+                clearStandaloneRestorePoll();
+                return;
+            }
+
+            const popupVisible = hasActiveStandaloneBlockingPopup();
+            if (popupVisible) {
+                sawPopup = true;
+                if (!minimizedForPopup && activeControls.minimize) {
+                    try {
+                        activeControls.minimize();
+                        minimizedForPopup = true;
+                    } catch (e) {
+                        console.warn('[Bot Browser] Failed to minimize standalone browser for popup:', e);
+                    }
+                }
+            }
+
+            const elapsed = Date.now() - startedAt;
+
+            if (sawPopup) {
+                if (importFinished && !popupVisible) {
+                    clearStandaloneRestorePoll();
+                    if (minimizedForPopup && activeControls.restore) {
+                        try {
+                            activeControls.restore();
+                        } catch (e) {
+                            console.warn('[Bot Browser] Failed to restore standalone browser after popup:', e);
+                        }
+                    }
+                    return;
+                }
+
+                if (elapsed >= 120000 && !popupVisible) {
+                    clearStandaloneRestorePoll();
+                    if (minimizedForPopup && activeControls.restore) {
+                        try {
+                            activeControls.restore();
+                        } catch (e) {
+                            console.warn('[Bot Browser] Failed to restore standalone browser after popup timeout:', e);
+                        }
+                    }
+                    return;
+                }
+
+                return;
+            }
+
+            if (importFinished && elapsed >= 2500) {
+                clearStandaloneRestorePoll();
+                return;
+            }
+
+            if (elapsed >= 60000) {
+                clearStandaloneRestorePoll();
+            }
+        };
+
+        standaloneRestorePoll = setInterval(tick, 150);
+        tick();
+
+        return () => {
+            importFinished = true;
+            tick();
+        };
+    };
+
     const scheduleCharactersRefresh = () => {
         if (refreshTimer) return;
         refreshTimer = setTimeout(async () => {
@@ -2712,29 +2836,55 @@ function setupStandaloneImportBridge() {
         };
 
         const desiredAvatar = normalizeAvatar(avatarFileRaw);
+        const desiredAvatarBase = desiredAvatar.replace(/\.png$/i, '');
         const desiredName = displayName.toLowerCase().trim();
 
         try {
-            // Ensure the internal characters array is current before selecting by index.
-            await getCharacters();
+            const findCharacterIndex = () => {
+                let idx = -1;
+
+                if (desiredAvatar) {
+                    idx = characters.findIndex((c) => String(c?.avatar || '').toLowerCase() === desiredAvatar);
+                }
+
+                if (idx < 0 && desiredAvatarBase) {
+                    idx = characters.findIndex((c) => String(c?.avatar || '').toLowerCase().replace(/\.png$/i, '') === desiredAvatarBase);
+                }
+
+                if (idx < 0 && desiredName) {
+                    idx = characters.findIndex((c) => String(c?.name || '').toLowerCase().trim() === desiredName);
+                }
+
+                return idx;
+            };
 
             let idx = -1;
+            const maxAttempts = 8;
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                // Ensure the internal characters array is current before selecting by index.
+                await getCharacters();
+                idx = findCharacterIndex();
+                if (idx >= 0) {
+                    break;
+                }
 
-            if (desiredAvatar) {
-                idx = characters.findIndex((c) => String(c?.avatar || '').toLowerCase() === desiredAvatar);
-            }
-
-            if (idx < 0 && desiredName) {
-                idx = characters.findIndex((c) => String(c?.name || '').toLowerCase().trim() === desiredName);
+                if (attempt < maxAttempts - 1) {
+                    await delay(350 + (attempt * 150));
+                }
             }
 
             if (idx < 0) {
                 console.warn('[Bot Browser] Could not find character to open:', { desiredAvatar, displayName });
-                toastr.warning('Could not find that character in your library yet. Try again in a moment.', 'Bot Browser');
+                toastr.warning('Could not find that character in your library yet. Bot Browser waited for the import, but SillyTavern still has not surfaced it.', 'Bot Browser');
                 return;
             }
 
             await selectCharacterById(idx, { switchMenu: false });
+            try {
+                window.__botBrowserStandaloneControls?.minimize?.();
+            } catch {
+                // ignore
+            }
         } catch (e) {
             console.warn('[Bot Browser] Failed to open character from standalone:', e);
             toastr.error('Failed to open character in SillyTavern', 'Bot Browser');
@@ -2811,6 +2961,8 @@ function setupStandaloneImportBridge() {
             return;
         }
 
+        if (!isStandaloneMessageForThisTab(msg)) return;
+
         if (msg.type === 'botbrowser_open_character') {
             await openCharacterInSillyTavern(msg);
             return;
@@ -2833,7 +2985,9 @@ function setupStandaloneImportBridge() {
         const file = msg.file;
         const preservedName = msg.preservedName;
 
+        const finishPopupWatch = watchStandaloneImportPopups();
         const { ok, error } = await handleImportRequest({ kind, file, preservedName });
+        finishPopupWatch?.();
 
         try {
             event.source?.postMessage(
@@ -2851,6 +3005,7 @@ function setupStandaloneImportBridge() {
         bc.addEventListener('message', async (event) => {
             const msg = event?.data;
             if (!msg) return;
+            if (!isStandaloneMessageForThisTab(msg)) return;
 
             if (msg.type === 'botbrowser_open_character') {
                 await openCharacterInSillyTavern(msg);
@@ -2874,7 +3029,9 @@ function setupStandaloneImportBridge() {
             const file = msg.file;
             const preservedName = msg.preservedName;
 
+            const finishPopupWatch = watchStandaloneImportPopups();
             const { ok, error } = await handleImportRequest({ kind, file, preservedName });
+            finishPopupWatch?.();
 
             try {
                 bc.postMessage({ type: 'botbrowser_import_result', requestId, ok, error });

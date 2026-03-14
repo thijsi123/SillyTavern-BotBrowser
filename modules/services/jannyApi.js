@@ -1,10 +1,11 @@
-import { proxiedFetch, getAuthHeadersForService } from './corsProxy.js';
+import { proxiedFetch, getAuthHeadersForService, PROXY_TYPES } from './corsProxy.js';
 
 const JANNY_SEARCH_URL = 'https://search.jannyai.com/multi-search';
 const JANNY_API_BASE = 'https://jannyai.com/api';
 const JANNY_FALLBACK_TOKEN = '88a6463b66e04fb07ba87ee3db06af337f492ce511d93df6e2d2968cb2ff2b30';
 export const JANNY_IMAGE_BASE = 'https://image.jannyai.com/bot-avatars/';
 const DEBUG = typeof window !== 'undefined' && window.__BOT_BROWSER_DEBUG === true;
+const JANNY_PUBLIC_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER];
 
 // Cached token state
 let cachedToken = null;
@@ -13,16 +14,67 @@ const jannyCharacterDetailsCache = new Map();
 const jannyCreatorProfileCache = new Map();
 const jannyCharacterUrlCache = new Map();
 
+async function fetchJannyViaPublicChain(url, accept = 'text/plain, */*') {
+    const errors = [];
+
+    for (const proxyType of JANNY_PUBLIC_PROXY_CHAIN) {
+        try {
+            const response = await proxiedFetch(url, {
+                service: 'jannyai',
+                proxyChain: [proxyType],
+                fetchOptions: {
+                    headers: {
+                        'Accept': accept,
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    },
+                },
+            });
+
+            if (!response.ok) {
+                errors.push(`${proxyType}:${response.status}`);
+                continue;
+            }
+
+            const text = await response.text();
+            if ((accept.includes('text/html') || /<html/i.test(text)) && isJannyChallengeHtml(text)) {
+                errors.push(`${proxyType}:cloudflare`);
+                continue;
+            }
+
+            return {
+                text,
+                response: new Response(text, {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: new Headers(response.headers),
+                }),
+            };
+        } catch (error) {
+            errors.push(`${proxyType}:${error?.message || error}`);
+        }
+    }
+
+    throw new Error(`Failed to fetch JannyAI resource: ${errors.join('; ') || 'no working public relay'}`);
+}
+
 async function fetchJannyHtml(url) {
-    return proxiedFetch(url, {
-        service: 'jannyai',
-        fetchOptions: {
-            headers: {
-                'Accept': 'text/html',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            },
-        },
-    });
+    const { response } = await fetchJannyViaPublicChain(url, 'text/html');
+    return response;
+}
+
+async function fetchJannyText(url, accept = 'text/plain, */*') {
+    const { text } = await fetchJannyViaPublicChain(url, accept);
+    return text;
+}
+
+function isJannyChallengeHtml(html) {
+    const text = String(html || '');
+    if (!text) return false;
+
+    return /<title>\s*Just a moment\.\.\.\s*<\/title>/i.test(text)
+        || text.includes('window._cf_chl_opt')
+        || text.includes('challenge-error-text')
+        || text.includes('__cf_chl_f_tk');
 }
 
 function extractCanonicalJannyCharacterPath(html, characterId) {
@@ -91,18 +143,7 @@ async function getSearchToken() {
     tokenFetchPromise = (async () => {
         try {
             // First fetch the search page to get the config file name
-            const pageResponse = await proxiedFetch('https://jannyai.com/characters/search', {
-                service: 'jannyai',
-                fetchOptions: {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-                }
-            });
-
-            if (!pageResponse.ok) {
-                throw new Error(`Failed to fetch search page: ${pageResponse.status}`);
-            }
-
-            const pageHtml = await pageResponse.text();
+            const pageHtml = await fetchJannyText('https://jannyai.com/characters/search', 'text/html');
 
             // Try to find client-config or SearchPage JS file
             let configMatch = pageHtml.match(/client-config\.[a-zA-Z0-9_-]+\.js/);
@@ -122,20 +163,14 @@ async function getSearchToken() {
                 }
 
                 // Fetch SearchPage.js first to find the client-config import
-                const searchPageJsResponse = await proxiedFetch('https://jannyai.com/_astro/' + searchPageMatch[0], {
-                    service: 'jannyai',
-                    fetchOptions: {
-                        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-                    }
-                });
-
-                if (searchPageJsResponse.ok) {
-                    const searchPageJs = await searchPageJsResponse.text();
-                    // Look for client-config import
-                    const importMatch = searchPageJs.match(/client-config\.[a-zA-Z0-9_-]+\.js/);
-                    if (importMatch) {
-                        configPath = '/_astro/' + importMatch[0];
-                    }
+                const searchPageJs = await fetchJannyText(
+                    'https://jannyai.com/_astro/' + searchPageMatch[0],
+                    'text/javascript, application/javascript, text/plain, */*',
+                );
+                // Look for client-config import
+                const importMatch = searchPageJs.match(/client-config\.[a-zA-Z0-9_-]+\.js/);
+                if (importMatch) {
+                    configPath = '/_astro/' + importMatch[0];
                 }
 
                 if (!configPath) {
@@ -144,18 +179,10 @@ async function getSearchToken() {
             }
 
             // Fetch the config JS file
-            const configResponse = await proxiedFetch('https://jannyai.com' + configPath, {
-                service: 'jannyai',
-                fetchOptions: {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-                }
-            });
-
-            if (!configResponse.ok) {
-                throw new Error(`Failed to fetch config: ${configResponse.status}`);
-            }
-
-            const configJs = await configResponse.text();
+            const configJs = await fetchJannyText(
+                'https://jannyai.com' + configPath,
+                'text/javascript, application/javascript, text/plain, */*',
+            );
 
             // Extract the 64-char hex token (it's the MeiliSearch public search key)
             const tokenMatch = configJs.match(/"([a-f0-9]{64})"/);
@@ -281,6 +308,7 @@ export async function getJannyCharactersByIds(ids = []) {
         const url = `${JANNY_API_BASE}/get-characters?ids=${encodeURIComponent(chunk.join(','))}`;
         const response = await proxiedFetch(url, {
             service: 'jannyai',
+            proxyChain: JANNY_PUBLIC_PROXY_CHAIN,
             fetchOptions: {
                 headers: {
                     'Accept': 'application/json',
@@ -489,15 +517,7 @@ export async function fetchJannyCreatorProfile(options = {}) {
     }
 
     const creatorUrl = getJannyCreatorUrl(creatorId, creatorName);
-    const response = await proxiedFetch(creatorUrl, {
-        service: 'jannyai',
-        fetchOptions: {
-            headers: {
-                'Accept': 'text/html',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            }
-        }
-    });
+    const response = await fetchJannyHtml(creatorUrl);
 
     if (!response.ok) {
         throw new Error(`Failed to fetch JannyAI creator profile: ${response.status}`);
@@ -648,6 +668,7 @@ export async function searchJannyCharacters(options = {}) {
         // Some environments block direct cross-site fetches; fall back to proxy chain.
         response = await proxiedFetch(JANNY_SEARCH_URL, {
             service: 'jannyai',
+            proxyChain: JANNY_PUBLIC_PROXY_CHAIN,
             fetchOptions: {
                 method: 'POST',
                 headers,
@@ -805,6 +826,7 @@ function normalizeJannyDefinitionValue(value) {
 function normalizeJannyDefinitionLabel(value) {
     return String(value || '')
         .replace(/\u00a0/g, ' ')
+        .trim()
         .replace(/:+$/g, '')
         .trim()
         .toLowerCase();
