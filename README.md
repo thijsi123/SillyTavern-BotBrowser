@@ -214,3 +214,9 @@ Bot Browser now has a much bigger settings surface than before.
 - Some features need auth, depending on the source
 - Archive sources are useful backups, but they are not full mirrors of the live platforms
 - Sites change their APIs sometimes, so a source can break until Bot Browser is updated
+
+## Other Extensions
+
+Also check out **Character Library** if you want another really useful SillyTavern extension:
+
+<https://github.com/Sillyanonymous/SillyTavern-CharacterLibrary>
