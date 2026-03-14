@@ -1,7 +1,7 @@
 // CrushOn.AI API Module
 // tRPC-based API, NSFW NOT auth-gated (nsfw param)
 
-import { PROXY_TYPES, getProxyChainForService, proxiedFetch } from './corsProxy.js';
+import { PROXY_TYPES, getAuthHeadersForService, getProxyChainForService, proxiedFetch } from './corsProxy.js';
 
 const BASE = 'https://crushon.ai/api/trpc';
 const CRUSHON_CREATOR_PROXY_CHAIN = [
@@ -30,6 +30,133 @@ function trpcUrl(procedure, input) {
     return `${BASE}/${procedure}?batch=1&input=${encoded}`;
 }
 
+const CRUSHON_CREATOR_CACHE_KEY = 'botbrowser-crushon-creator-id-cache';
+let crushonCreatorIdCache = null;
+
+function getCrushonCreatorIdCache() {
+    if (crushonCreatorIdCache) return crushonCreatorIdCache;
+
+    const cache = new Map();
+    try {
+        const raw = globalThis?.localStorage?.getItem?.(CRUSHON_CREATOR_CACHE_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            for (const [name, id] of Object.entries(parsed || {})) {
+                const normalizedName = normalizeCrushonCreatorLabel(name);
+                const normalizedId = String(id || '').trim();
+                if (normalizedName && normalizedId) cache.set(normalizedName, normalizedId);
+            }
+        }
+    } catch {
+        // ignore localStorage failures
+    }
+
+    crushonCreatorIdCache = cache;
+    return crushonCreatorIdCache;
+}
+
+function persistCrushonCreatorIdCache() {
+    try {
+        const cache = getCrushonCreatorIdCache();
+        const serializable = Object.fromEntries(cache.entries());
+        globalThis?.localStorage?.setItem?.(CRUSHON_CREATOR_CACHE_KEY, JSON.stringify(serializable));
+    } catch {
+        // ignore localStorage failures
+    }
+}
+
+function rememberCrushonCreatorIdentity(name, id) {
+    const normalizedName = normalizeCrushonCreatorLabel(name);
+    const normalizedId = String(id || '').trim();
+    if (!normalizedName || !normalizedId) return;
+    const cache = getCrushonCreatorIdCache();
+    if (cache.get(normalizedName) === normalizedId) return;
+    cache.set(normalizedName, normalizedId);
+    persistCrushonCreatorIdCache();
+}
+
+function getRememberedCrushonCreatorId(name) {
+    const normalizedName = normalizeCrushonCreatorLabel(name);
+    if (!normalizedName) return '';
+    return String(getCrushonCreatorIdCache().get(normalizedName) || '').trim();
+}
+
+function buildCorsProxyIoUrl(targetUrl, reqHeaders = {}) {
+    let proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
+
+    for (const [header, value] of Object.entries(reqHeaders || {})) {
+        if (value == null || value === '') continue;
+        proxyUrl += `&reqHeaders=${encodeURIComponent(`${header}:${value}`)}`;
+    }
+
+    return proxyUrl;
+}
+
+function getCrushonFullCookieHeader() {
+    const authHeaders = getAuthHeadersForService('crushon');
+    const cookieHeader = String(authHeaders?.Cookie || authHeaders?.cookie || '').trim();
+    return cookieHeader.includes('=') ? cookieHeader : '';
+}
+
+function parseCookieHeader(cookieHeader) {
+    const cookies = {};
+    for (const part of String(cookieHeader || '').split(';')) {
+        const segment = String(part || '').trim();
+        if (!segment) continue;
+        const separatorIndex = segment.indexOf('=');
+        if (separatorIndex <= 0) continue;
+        const key = segment.slice(0, separatorIndex).trim();
+        const value = segment.slice(separatorIndex + 1).trim();
+        if (!key) continue;
+        cookies[key] = value;
+    }
+    return cookies;
+}
+
+function getCrushonRelayHeaders(extraHeaders = {}) {
+    const cookieHeader = getCrushonFullCookieHeader();
+    if (!cookieHeader) return null;
+
+    return {
+        Accept: 'application/json',
+        Cookie: cookieHeader,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+        ...extraHeaders,
+    };
+}
+
+function buildCrushonSearchHeaders(options = {}) {
+    const {
+        nsfw = false,
+        gender = 0,
+        locale = 'en',
+        flyingNsfw = false,
+        external = '',
+    } = options;
+
+    const cookieHeader = getCrushonFullCookieHeader();
+    const cookies = parseCookieHeader(cookieHeader);
+    const language = String(cookies.language || locale || 'en');
+    const preferLanguage = String(cookies.MODEL_LOCALE || cookies.OCLanguage || 'english');
+    const deviceId = String(cookies.deviceId || '').trim();
+    const userId = String(cookies.userId || '').trim();
+
+    const headers = {
+        'x-language': language,
+        'x-prefer-language': preferLanguage,
+        'x-device-language': 'en-US',
+        'x-nsfw': nsfw ? 'true' : 'false',
+        'x-flying-nsfw': flyingNsfw ? 'true' : 'false',
+        'x-gender': String(gender || 0),
+    };
+
+    if (deviceId) headers['x-device-id'] = deviceId;
+    if (userId) headers['x-biz-user-id'] = userId;
+    if (external) headers['x-external'] = external;
+
+    return headers;
+}
+
 function extractTrpcPayload(data) {
     return data?.[0]?.result?.data?.json;
 }
@@ -39,17 +166,32 @@ function extractCrushonCollectionPayload(result) {
     const characters = payload?.characters || payload?.data?.characters || [];
     const nextCursor = payload?.nextCursor ?? payload?.data?.nextCursor ?? null;
     const total = payload?.total ?? payload?.data?.total ?? 0;
+    const external = payload?.external ?? payload?.data?.external ?? '';
 
     return {
         payload,
         characters: Array.isArray(characters) ? characters : [],
         nextCursor,
         total: Number(total || 0) || 0,
+        external: String(external || ''),
+    };
+}
+
+function extractCrushonUserSearchPayload(result) {
+    const payload = result?.data || result || {};
+    const users = payload?.users || payload?.data?.users || [];
+    const pager = payload?.pager || payload?.data?.pager || {};
+
+    return {
+        payload,
+        users: Array.isArray(users) ? users : [],
+        nextCursor: payload?.nextCursor ?? payload?.data?.nextCursor ?? pager?.offset ?? null,
+        total: Number(pager?.total || payload?.total || payload?.data?.total || 0) || 0,
     };
 }
 
 async function fetchTrpc(procedure, input, options = {}) {
-    const { validate = null, proxyChain = null, service = 'crushon' } = options;
+    const { validate = null, proxyChain = null, service = 'crushon', extraHeaders = {} } = options;
     const url = trpcUrl(procedure, input);
     const proxies = Array.isArray(proxyChain) && proxyChain.length > 0
         ? proxyChain
@@ -61,7 +203,7 @@ async function fetchTrpc(procedure, input, options = {}) {
             const response = await proxiedFetch(url, {
                 service,
                 proxyChain: [proxyType],
-                fetchOptions: { method: 'GET', headers: { Accept: 'application/json' } }
+                fetchOptions: { method: 'GET', headers: { Accept: 'application/json', ...extraHeaders } }
             });
             if (!response.ok) throw new Error(`CrushOn API error: ${response.status}`);
             const data = await response.json();
@@ -87,6 +229,47 @@ async function fetchTrpc(procedure, input, options = {}) {
     }
 
     throw lastError || new Error(`CrushOn request failed: ${procedure}`);
+}
+
+async function fetchTrpcViaCrushonAuthRelay(procedure, input, options = {}) {
+    const {
+        validate = null,
+        extraHeaders = {},
+    } = options;
+
+    const relayHeaders = getCrushonRelayHeaders(extraHeaders);
+    if (!relayHeaders) {
+        throw new Error('CrushOn full Cookie header not available for relay fetch');
+    }
+
+    const response = await fetch(buildCorsProxyIoUrl(trpcUrl(procedure, input), relayHeaders), {
+        method: 'GET',
+        headers: {
+            Accept: 'application/json',
+        },
+    });
+
+    if (!response.ok) {
+        throw new Error(`CrushOn relay fetch failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const payload = extractTrpcPayload(data);
+
+    if (validate) {
+        const verdict = await validate(payload, data);
+        if (verdict === false) {
+            throw new Error(`CrushOn payload validation failed for ${procedure}`);
+        }
+        if (typeof verdict === 'string') {
+            throw new Error(verdict);
+        }
+        if (verdict && typeof verdict === 'object' && verdict.ok === false) {
+            throw new Error(verdict.reason || `CrushOn payload validation failed for ${procedure}`);
+        }
+    }
+
+    return payload;
 }
 
 async function fetchCrushonPublicCollectionSnapshot(userId, nsfw = false, locale = 'en', options = {}) {
@@ -244,6 +427,7 @@ export async function searchCrushonCharacters(options = {}) {
         version = 5864093,
         proxyChain = null,
         service = 'crushon',
+        external = '',
     } = options;
 
     const input = {
@@ -261,24 +445,91 @@ export async function searchCrushonCharacters(options = {}) {
     };
     if (cursor !== null) input.cursor = cursor;
 
-    const result = await fetchTrpc('character.searchInfinite', input, {
-        proxyChain,
-        service,
-        validate: (payload) => {
-            const { characters, total } = extractCrushonCollectionPayload(payload);
-            if (total > 0 && characters.length === 0) {
-                return 'CrushOn search returned an empty character list with a non-zero total';
-            }
-            return true;
-        },
+    const searchHeaders = buildCrushonSearchHeaders({
+        nsfw,
+        gender,
+        locale,
+        flyingNsfw,
+        external,
     });
+    const validateSearchPayload = (payload) => {
+        const { characters, total } = extractCrushonCollectionPayload(payload);
+        if (total > 0 && characters.length === 0) {
+            return 'CrushOn search returned an empty character list with a non-zero total';
+        }
+        return true;
+    };
 
-    const { characters, nextCursor, total } = extractCrushonCollectionPayload(result);
+    let result;
+    try {
+        if (getCrushonFullCookieHeader()) {
+            result = await fetchTrpcViaCrushonAuthRelay('character.searchInfinite', input, {
+                validate: validateSearchPayload,
+                extraHeaders: searchHeaders,
+            });
+        } else {
+            throw new Error('CrushOn full Cookie header not available for search relay');
+        }
+    } catch {
+        result = await fetchTrpc('character.searchInfinite', input, {
+            proxyChain,
+            service,
+            extraHeaders: searchHeaders,
+            validate: validateSearchPayload,
+        });
+    }
+
+    const { characters, nextCursor, total, external: nextExternal } = extractCrushonCollectionPayload(result);
 
     return {
         characters,
         nextCursor,
         hasMore: nextCursor != null,
+        total,
+        external: nextExternal,
+    };
+}
+
+export async function searchCrushonUsers(options = {}) {
+    const {
+        query = '',
+        count = 8,
+        cursor = null,
+        locale = 'en',
+        proxyChain = CRUSHON_CREATOR_PROXY_CHAIN,
+        service = 'crushon',
+    } = options;
+
+    const input = {
+        query,
+        cursor,
+        count,
+        locale,
+        pager: {
+            total: 0,
+            count,
+            offset: typeof cursor === 'number' ? cursor : 0,
+            external: '',
+        },
+    };
+
+    const result = await fetchTrpc('search.searchUser', input, {
+        proxyChain,
+        service,
+        validate: (payload) => {
+            const { users, total } = extractCrushonUserSearchPayload(payload);
+            if (total > 0 && users.length === 0) {
+                return 'CrushOn user search returned an empty user list with a non-zero total';
+            }
+            return true;
+        },
+    });
+
+    const { users, nextCursor, total } = extractCrushonUserSearchPayload(result);
+    return {
+        users,
+        nextCursor,
+        hasMore: nextCursor != null && Number(nextCursor) > 0,
         total,
     };
 }
@@ -369,6 +620,63 @@ export async function getCrushonUserCharacters(userId, nsfw = false, locale = 'e
     };
 }
 
+async function getCrushonUserCharactersViaRelay(userId, nsfw = false, locale = 'en', options = {}) {
+    const {
+        count = 24,
+        cursor = null,
+        tag = 1,
+        requestPosition = 1,
+        gamePlayTypes = [],
+        sortTag = 1,
+        gender = 0,
+        filterTags = [],
+        allowEmptyCharactersWithTotal = false,
+    } = options;
+
+    const input = {
+        isOwn: false,
+        userId,
+        tag,
+        locale,
+        nsfw,
+        requestPosition,
+        gamePlayTypes,
+        sortTag,
+        gender,
+        filterTags,
+        count,
+        direction: 'forward',
+    };
+
+    if (cursor !== null && cursor !== undefined && cursor !== '') {
+        input.cursor = cursor;
+    }
+
+    const result = await fetchTrpcViaCrushonAuthRelay('character.queryUserCharacters', input, {
+        extraHeaders: {
+            'x-nsfw': nsfw ? 'true' : 'false',
+            'x-language': locale,
+            'x-device-id': 'botbrowser',
+        },
+        validate: (payload) => {
+            const { characters, total } = extractCrushonCollectionPayload(payload);
+            if (total > 0 && characters.length === 0) {
+                if (allowEmptyCharactersWithTotal) return true;
+                return 'CrushOn relay creator lookup returned an empty character list with a non-zero total';
+            }
+            return true;
+        },
+    });
+
+    const { characters, nextCursor, total } = extractCrushonCollectionPayload(result);
+    return {
+        characters,
+        total,
+        nextCursor,
+        hasMore: nextCursor != null,
+    };
+}
+
 export async function getCrushonUserProfile(userId, options = {}) {
     const { proxyChain = CRUSHON_CREATOR_PROXY_CHAIN, service = 'crushon' } = options;
     if (!userId) {
@@ -381,6 +689,11 @@ export async function getCrushonUserProfile(userId, options = {}) {
     }).catch(() => null);
 
     return payload || null;
+}
+
+async function getCrushonUserProfileViaRelay(userId) {
+    if (!userId) return null;
+    return fetchTrpcViaCrushonAuthRelay('account.queryOtherUserProfile', { userId });
 }
 
 function normalizeCrushonCreatorLabel(value) {
@@ -508,6 +821,8 @@ function parseCrushonProfileCardsHtml(html, userId = '') {
             _profileHref: cardHref,
             _profilePageVisible: true,
         });
+
+        rememberCrushonCreatorIdentity(creatorName, userId);
     }
 
     return {
@@ -589,6 +904,55 @@ async function resolveCrushonUserIdByCreatorName(creatorName, options = {}) {
     const needle = normalizeCrushonCreatorLabel(creatorName);
     if (!needle) return '';
 
+    const rememberedId = getRememberedCrushonCreatorId(creatorName);
+    if (rememberedId) return rememberedId;
+
+    try {
+        const userSearch = await searchCrushonUsers({
+            query: creatorName,
+            count: 8,
+            locale,
+            proxyChain: CRUSHON_CREATOR_PROXY_CHAIN,
+            service: 'crushon',
+        });
+
+        const rankedUsers = (Array.isArray(userSearch?.users) ? userSearch.users : [])
+            .map((entry) => {
+                const user = entry?.user || entry || {};
+                const name = String(user?.name || '').trim();
+                const normalizedName = normalizeCrushonCreatorLabel(name);
+                const userId = String(user?.userId || user?.id || '').trim();
+                if (!userId || !normalizedName) return null;
+
+                const exactName = normalizedName === needle ? 1 : 0;
+                const startsWith = normalizedName.startsWith(needle) ? 1 : 0;
+                const characterNum = Number(entry?.characterNum || 0) || 0;
+                return {
+                    id: userId,
+                    name,
+                    normalizedName,
+                    exactName,
+                    startsWith,
+                    characterNum,
+                };
+            })
+            .filter(Boolean)
+            .sort((a, b) => {
+                if (b.exactName !== a.exactName) return b.exactName - a.exactName;
+                if (b.startsWith !== a.startsWith) return b.startsWith - a.startsWith;
+                if (b.characterNum !== a.characterNum) return b.characterNum - a.characterNum;
+                return a.normalizedName.localeCompare(b.normalizedName);
+            });
+
+        const bestUser = rankedUsers[0];
+        if (bestUser?.id) {
+            rememberCrushonCreatorIdentity(bestUser.name || creatorName, bestUser.id);
+            return bestUser.id;
+        }
+    } catch {
+        // fall through to character-search-based resolution
+    }
+
     const searchModes = allowNsfw ? [false, true] : [false];
     const matches = new Map();
 
@@ -615,6 +979,8 @@ async function resolveCrushonUserIdByCreatorName(creatorName, options = {}) {
             const creator = normalizeCrushonCreatorLabel(card?.creator || card?.user?.name || '');
             const userId = String(card?.user?.id || '').trim();
             if (!userId || creator !== needle) continue;
+
+            rememberCrushonCreatorIdentity(card?.creator || card?.user?.name || creatorName, userId);
 
             const bucket = matches.get(userId) || {
                 id: userId,
@@ -681,30 +1047,42 @@ export async function getCrushonCreatorCharacters(userNeedle, locale = 'en', opt
         allowEmptyCharactersWithTotal: true,
     };
 
-    const [profile, sfwResult, nsfwResult, profilePageResult] = await Promise.all([
-        getCrushonUserProfile(userId, {
+    const fetchCreatorProfile = async () => {
+        const relayProfile = await getCrushonUserProfileViaRelay(userId).catch(() => null);
+        if (relayProfile) return relayProfile;
+        return getCrushonUserProfile(userId, {
             proxyChain: CRUSHON_CREATOR_PROXY_CHAIN,
             service: 'crushon',
-        }).catch(() => null),
-        getCrushonUserCharacters(userId, false, locale, {
+        }).catch(() => null);
+    };
+
+    const fetchCreatorCharacters = async (nsfw) => {
+        const cursorValue = nsfw ? parsedCursor.nsfw : parsedCursor.sfw;
+        const relayResult = await getCrushonUserCharactersViaRelay(userId, nsfw, locale, {
+            count,
+            cursor: cursorValue,
+            gender,
+            filterTags,
+            allowEmptyCharactersWithTotal: true,
+        }).catch(() => null);
+        if (relayResult) return relayResult;
+        return getCrushonUserCharacters(userId, nsfw, locale, {
             ...sharedOptions,
-            cursor: parsedCursor.sfw,
+            cursor: cursorValue,
+            allowEmptyCharactersWithTotal: true,
         }).catch(() => ({
             characters: [],
             total: 0,
             nextCursor: null,
             hasMore: false,
-        })),
+        }));
+    };
+
+    const [profile, sfwResult, nsfwResult, profilePageResult] = await Promise.all([
+        fetchCreatorProfile(),
+        fetchCreatorCharacters(false),
         allowNsfw
-            ? getCrushonUserCharacters(userId, true, locale, {
-                ...sharedOptions,
-                cursor: parsedCursor.nsfw,
-            }).catch(() => ({
-                characters: [],
-                total: 0,
-                nextCursor: null,
-                hasMore: false,
-            }))
+            ? fetchCreatorCharacters(true)
             : Promise.resolve({
                 characters: [],
                 total: 0,
@@ -820,12 +1198,16 @@ export function transformCrushonCard(card) {
         card.characterSceneCard?.image,
         card.characterSceneCard?.croppedImage,
     ]);
+    const creatorName = pickCrushonCreatorName(card);
+    const creatorId = String(card?.user?.id || '').trim();
+
+    rememberCrushonCreatorIdentity(creatorName, creatorId);
 
     return {
         id: card.id || '',
         name: card.name || 'Unnamed',
-        creator: pickCrushonCreatorName(card),
-        _creatorId: card.user?.id || '',
+        creator: creatorName,
+        _creatorId: creatorId,
         _creatorProfileAvatarUrl: pickCrushonCreatorAvatar(card),
         avatar_url: card.avatar || card.characterAvatar?.avatar || '',
         image_url: card.avatar || card.characterAvatar?.avatar || '',
@@ -932,6 +1314,7 @@ function buildCrushonExampleDialogue(char) {
 export function transformFullCrushonCharacter(char) {
     const mesExample = buildCrushonExampleDialogue(char);
     const creatorName = pickCrushonCreatorName(char);
+    const creatorId = String(char?.user?.id || char?.creator?.id || '').trim();
     const websiteDescription = char.description || '';
     const primaryDefinition = char.personality || char.scenario || char.appearance || websiteDescription || char.greeting || '';
     const usedGreetingFallback = !char.personality && !char.scenario && !char.appearance && !websiteDescription && !!char.greeting;
@@ -969,6 +1352,8 @@ export function transformFullCrushonCharacter(char) {
         usedGreetingFallback ? 'Public definition text is hidden on CrushOn; Primary Definition fell back to the visible greeting.' : '',
     ].filter(Boolean).join('\n');
 
+    rememberCrushonCreatorIdentity(creatorName, creatorId);
+
     return {
         name: char.name || '',
         description: primaryDefinition,
@@ -991,6 +1376,7 @@ export function transformFullCrushonCharacter(char) {
         canShowAlbumCount: char.canShowAlbumCount || 0,
         total_chars: char.messages || 0,
         visibility: char.visibility,
+        _creatorId: creatorId,
         created_at: normalizeCrushonTimestamp(char.createAt || char.createdAt || ''),
         updated_at: normalizeCrushonTimestamp(char.updateAt || char.updatedAt || ''),
         _creatorProfileAvatarUrl: pickCrushonCreatorAvatar(char),
