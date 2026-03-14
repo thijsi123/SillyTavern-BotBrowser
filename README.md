@@ -12,6 +12,15 @@ Install via the SillyTavern extension installer:
 https://github.com/mia13165/SillyTavern-BotBrowser
 ```
 
+## How to Update
+
+In SillyTavern:
+
+1. Open the extensions menu.
+2. Click `Manage Extensions`.
+3. Scroll down to `Bot Browser`.
+4. Click the update arrow.
+
 ## How to Use
 
 Click the bot icon next to the import bots button.
