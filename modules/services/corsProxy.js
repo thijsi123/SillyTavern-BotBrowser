@@ -8,6 +8,7 @@ export const PROXY_TYPES = {
     PLUGIN: 'plugin',
     PUTER: 'puter',
     CORSPROXY_IO: 'corsproxy_io',
+    CORS_EU_ORG: 'cors_eu_org',
     CORS_LOL: 'cors_lol',
     NONE: 'none'
 };
@@ -44,6 +45,11 @@ const PROXY_CONFIGS = {
         },
         rateLimit: 'Unknown, prone to 429 errors'
     },
+    [PROXY_TYPES.CORS_EU_ORG]: {
+        name: 'cors.eu.org',
+        buildUrl: (targetUrl) => `https://cors.eu.org/${targetUrl}`,
+        rateLimit: 'Unknown'
+    },
     [PROXY_TYPES.CORS_LOL]: {
         name: 'cors.lol',
         buildUrl: (targetUrl) => `https://api.cors.lol/?url=${encodeURIComponent(targetUrl)}`,
@@ -64,8 +70,8 @@ const PROXY_CONFIGS = {
 const SERVICE_PROXY_MAP = {
     // JannyAI (Cloudflare) - keep it on the public relay chain, not the plugin path.
     // corsproxy.io is the least noisy path here; fall back to Puter only if needed.
-    jannyai: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    jannyai_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    jannyai: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.PUTER],
+    jannyai_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.PUTER],
 
     // Character Tavern - corsproxy.io first, then Puter, then cors.lol
     character_tavern: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],

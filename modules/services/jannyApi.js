@@ -5,7 +5,11 @@ const JANNY_API_BASE = 'https://jannyai.com/api';
 const JANNY_FALLBACK_TOKEN = '88a6463b66e04fb07ba87ee3db06af337f492ce511d93df6e2d2968cb2ff2b30';
 export const JANNY_IMAGE_BASE = 'https://image.jannyai.com/bot-avatars/';
 const DEBUG = typeof window !== 'undefined' && window.__BOT_BROWSER_DEBUG === true;
-const JANNY_PUBLIC_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER];
+const JANNY_PUBLIC_PROXY_CHAIN = [
+    PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.CORS_EU_ORG,
+    PROXY_TYPES.PUTER,
+];
 
 // Cached token state
 let cachedToken = null;
