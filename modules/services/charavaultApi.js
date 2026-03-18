@@ -5,7 +5,13 @@ import { proxiedFetch, PROXY_TYPES } from './corsProxy.js';
 import { extractCharacterDataFromPngArrayBuffer } from './embeddedCardParser.js';
 
 const BASE = 'https://charavault.net';
-const CHARAVAULT_AUTH_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER];
+const CHARAVAULT_AUTH_PROXY_CHAIN = [
+    PROXY_TYPES.PLUGIN,
+    PROXY_TYPES.CORS_EU_ORG,
+    PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.PUTER,
+    PROXY_TYPES.CORS_LOL,
+];
 
 export let charavaultApiState = {
     offset: 0,

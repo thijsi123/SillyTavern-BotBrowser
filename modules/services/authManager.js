@@ -1,7 +1,8 @@
 // Auth Manager for BotBrowser
 // Handles auth state, login, token storage, and favorites for live services.
 
-import { proxiedFetch, PROXY_TYPES } from './corsProxy.js';
+import { getAuthHeadersForService, proxiedFetch, PROXY_TYPES } from './corsProxy.js';
+import { getCrushonCharacter, getCrushonPublicRelayAuthHeaders } from './crushonApi.js';
 
 const SUPABASE_URL = 'https://ehgqxxoeyqsdgquzzond.supabase.co';
 const HARPY_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVoZ3F4eG9leXFzZGdxdXp6b25kIiwicm9sZSI6ImFub24iLCJpYXQiOjE2OTI5NTM0ODUsImV4cCI6MjAwODUyOTQ4NX0.Cn-jDJqZFnwnhV9H6sBdRj8a3RA_XNWsBrApg4spOis';
@@ -9,7 +10,12 @@ const SAKURA_CLERK_BASE = 'https://clerk.sakura.fm';
 const SAKURA_CLERK_VERSION = '5.66.1';
 const JOYLAND_API_BASE = 'https://api.joyland.ai';
 const WYVERN_FIREBASE_API_KEY = 'AIzaSyCqumrbjUy-EoMpfN4Ev0ppnqjkdpnOTTw';
-const CHARAVAULT_AUTH_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER];
+const CHARAVAULT_AUTH_PROXY_CHAIN = [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL];
+const CRUSHON_PUBLIC_AUTH_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO];
+const CRUSHON_LIKES_HYDRATION_CONCURRENCY = 4;
+const BOT_BROWSER_SETTINGS_KEY = 'botbrowser-settings';
+const SAKURA_TOKEN_REFRESH_LEEWAY_SECONDS = 60;
+let sakuraTokenRefreshPromise = null;
 
 function parseJsonSafely(text) {
     if (!text) return {};
@@ -76,11 +82,123 @@ function decodeJwtPayload(token) {
     }
 }
 
+function getBotBrowserSettingsSnapshot() {
+    if (typeof window === 'undefined') return {};
+    return parseJsonSafely(window.localStorage.getItem(BOT_BROWSER_SETTINGS_KEY) || '{}');
+}
+
+function writeBotBrowserSettingsPatch(patch = {}) {
+    if (typeof window === 'undefined' || !patch || typeof patch !== 'object') return;
+    try {
+        const current = getBotBrowserSettingsSnapshot();
+        window.localStorage.setItem(BOT_BROWSER_SETTINGS_KEY, JSON.stringify({
+            ...current,
+            ...patch,
+        }));
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+function isJwtExpiredOrNearExpiry(token, leewaySeconds = 0) {
+    const payload = decodeJwtPayload(token);
+    const exp = Number(payload?.exp || 0);
+    if (!exp) return false;
+    return exp <= (Math.floor(Date.now() / 1000) + Math.max(0, Number(leewaySeconds || 0) || 0));
+}
+
+function getCurrentSakuraToken() {
+    const authHeaderMap = getAuthHeadersForService('sakura');
+    const headerValue = String(authHeaderMap?.Authorization || authHeaderMap?.authorization || '').trim();
+    const headerToken = headerValue.replace(/^Bearer\s+/i, '').trim();
+    if (headerToken) return headerToken;
+
+    const stateToken = String(authState?.sakura?.token || '').trim();
+    if (stateToken) return stateToken;
+
+    const settingsToken = String(getBotBrowserSettingsSnapshot()?.sakuraToken || '').trim();
+    if (settingsToken) return settingsToken;
+
+    return '';
+}
+
+function applySakuraToken(token, displayName = null) {
+    const normalizedToken = String(token || '').trim();
+    const normalizedDisplayName = String(displayName || '').trim();
+    authState.sakura.token = normalizedToken || null;
+    authState.sakura.displayName = normalizedDisplayName || authState.sakura.displayName || null;
+    const sakuraHeaders = normalizedToken ? { Authorization: `Bearer ${normalizedToken}` } : null;
+    setServiceAuthHeader('sakura', sakuraHeaders);
+    setServiceAuthHeader('sakura_personal', sakuraHeaders);
+
+    if (normalizedToken) {
+        writeBotBrowserSettingsPatch({
+            sakuraToken: normalizedToken,
+            ...(normalizedDisplayName ? { sakuraDisplayName: normalizedDisplayName } : {}),
+        });
+    }
+}
+
+export async function ensureFreshSakuraToken(options = {}) {
+    const {
+        required = false,
+        forceRefresh = false,
+    } = options;
+
+    const currentToken = getCurrentSakuraToken();
+    const currentPayload = decodeJwtPayload(currentToken);
+    const isCurrentExpired = isJwtExpiredOrNearExpiry(currentToken, 0);
+
+    if (currentToken && !forceRefresh && !isJwtExpiredOrNearExpiry(currentToken, SAKURA_TOKEN_REFRESH_LEEWAY_SECONDS)) {
+        return currentToken;
+    }
+
+    if (sakuraTokenRefreshPromise) {
+        return sakuraTokenRefreshPromise;
+    }
+
+    sakuraTokenRefreshPromise = (async () => {
+        try {
+            const client = await fetchSakuraClient();
+            const refreshedToken = findJwtDeep(client);
+            if (refreshedToken && !isJwtExpiredOrNearExpiry(refreshedToken, 0)) {
+                const refreshedPayload = decodeJwtPayload(refreshedToken);
+                applySakuraToken(refreshedToken, refreshedPayload?.username || authState.sakura.displayName || currentPayload?.username || null);
+                return refreshedToken;
+            }
+        } catch {
+            // Fall back to the stored token or throw below when auth is required.
+        } finally {
+            sakuraTokenRefreshPromise = null;
+        }
+
+        if (required) {
+            if (currentToken && isCurrentExpired) {
+                throw new Error('Sakura token expired. Open Sakura.fm in another tab to refresh the session, then retry, or reconnect it in Settings.');
+            }
+            if (!currentToken) {
+                throw new Error('Sakura login required. Connect Sakura.fm in Settings or open Sakura.fm in another tab before retrying.');
+            }
+        }
+
+        return currentToken;
+    })();
+
+    return sakuraTokenRefreshPromise;
+}
+
 function extractCharavaultToken(rawValue) {
     const normalized = String(rawValue || '').trim();
     if (!normalized) return '';
     const cookieMatch = normalized.match(/(?:^|;\s*)charavault_token=([^;]+)/i);
     return decodeURIComponent((cookieMatch?.[1] || normalized).trim());
+}
+
+function buildCrushonCookieHeader(rawValue) {
+    const normalized = String(rawValue || '').trim().replace(/^cookie\s*:\s*/i, '');
+    if (!normalized) return '';
+    if (normalized.includes('=')) return normalized;
+    return `__Secure-next-auth.session-token=${normalized}`;
 }
 
 function charavaultAuthFetch(url, { service = 'charavault', fetchOptions = {} } = {}) {
@@ -90,6 +208,122 @@ function charavaultAuthFetch(url, { service = 'charavault', fetchOptions = {} } 
         allowPublicAuth: true,
         fetchOptions,
     });
+}
+
+function isPublicRelayFallbackEnabled() {
+    try {
+        if (typeof window === 'undefined') return true;
+        return window.__BOT_BROWSER_ALLOW_PUBLIC_RELAY_FALLBACK === true;
+    } catch {
+        return true;
+    }
+}
+
+function buildCrushonRelayGuidance(operation, directTransportError = null) {
+    const directMessage = String(directTransportError?.message || '').trim();
+    const detail = directMessage ? ` Direct auth transports failed first: ${directMessage}` : '';
+    return `${operation} could not be loaded through the BotBrowser plugin or Puter. Enable "Allow Public CORS Relay Fallback" in Settings -> Connections -> BotBrowser Plugin to retry through the configured public relays.${detail}`;
+}
+
+function attachCrushonLikesMeta(characters, total) {
+    const items = Array.isArray(characters) ? characters : [];
+    const normalizedTotal = Number.isFinite(Number(total)) ? Math.max(0, Math.floor(Number(total))) : items.length;
+
+    try {
+        Object.defineProperty(items, 'total', {
+            value: normalizedTotal,
+            configurable: true,
+            enumerable: false,
+            writable: true,
+        });
+        Object.defineProperty(items, 'totalCount', {
+            value: normalizedTotal,
+            configurable: true,
+            enumerable: false,
+            writable: true,
+        });
+    } catch {
+        items.total = normalizedTotal;
+        items.totalCount = normalizedTotal;
+    }
+
+    return items;
+}
+
+function getCrushonLikesCollection(payload) {
+    if (Array.isArray(payload)) {
+        return {
+            characters: payload,
+            characterIds: [],
+            total: payload.length,
+        };
+    }
+
+    const characters = payload?.characters || payload?.data?.characters || [];
+    const characterIds = payload?.characterIds || payload?.data?.characterIds || [];
+    const total = payload?.total ?? payload?.data?.total ?? (Array.isArray(characterIds) ? characterIds.length : Array.isArray(characters) ? characters.length : 0);
+
+    return {
+        characters: Array.isArray(characters) ? characters : [],
+        characterIds: Array.isArray(characterIds) ? characterIds : [],
+        total: Number(total || 0) || 0,
+    };
+}
+
+async function hydrateCrushonLikesByIds(characterIds, { limit = 24, offset = 0 } = {}) {
+    const dedupedIds = [...new Set(
+        (Array.isArray(characterIds) ? characterIds : [])
+            .map((value) => String(value || '').trim())
+            .filter(Boolean)
+    )];
+    const total = dedupedIds.length;
+    const normalizedOffset = Math.max(0, Math.floor(Number(offset || 0) || 0));
+    const normalizedLimit = Number.isFinite(Number(limit)) && Number(limit) > 0
+        ? Math.max(1, Math.floor(Number(limit)))
+        : total;
+    const pageIds = dedupedIds.slice(normalizedOffset, normalizedOffset + normalizedLimit);
+
+    if (pageIds.length === 0) {
+        return attachCrushonLikesMeta([], total);
+    }
+
+    const hydrated = new Array(pageIds.length).fill(null);
+    let cursor = 0;
+    const workerCount = Math.max(1, Math.min(CRUSHON_LIKES_HYDRATION_CONCURRENCY, pageIds.length));
+
+    const workers = Array.from({ length: workerCount }, async () => {
+        while (cursor < pageIds.length) {
+            const index = cursor;
+            cursor += 1;
+            const characterId = pageIds[index];
+
+            try {
+                hydrated[index] = await getCrushonCharacter(characterId);
+            } catch (error) {
+                console.warn('[Bot Browser] CrushOn likes hydration failed:', characterId, error);
+            }
+        }
+    });
+
+    await Promise.all(workers);
+    return attachCrushonLikesMeta(hydrated.filter(Boolean), total);
+}
+
+function parseCrushonLikesResponse(data, options = {}) {
+    const payload = data?.[0]?.result?.data?.json || [];
+    const collection = getCrushonLikesCollection(payload);
+
+    if (collection.characters.length > 0) {
+        const normalizedOffset = Math.max(0, Math.floor(Number(options.offset || 0) || 0));
+        const normalizedLimit = Number.isFinite(Number(options.limit)) && Number(options.limit) > 0
+            ? Math.max(1, Math.floor(Number(options.limit)))
+            : collection.characters.length;
+        const pageCharacters = collection.characters.slice(normalizedOffset, normalizedOffset + normalizedLimit);
+        const total = collection.total || collection.characters.length;
+        return Promise.resolve(attachCrushonLikesMeta(pageCharacters, total));
+    }
+
+    return hydrateCrushonLikesByIds(collection.characterIds, options);
 }
 
 function getJoylandFingerprint() {
@@ -206,12 +440,16 @@ export function initAuthFromSettings(settings, harpySetTokenFn) {
         authState.sakura.token = settings.sakuraToken;
         authState.sakura.displayName = settings.sakuraDisplayName || null;
         setServiceAuthHeader('sakura', { Authorization: `Bearer ${settings.sakuraToken}` });
+        setServiceAuthHeader('sakura_personal', { Authorization: `Bearer ${settings.sakuraToken}` });
     }
 
     if (settings.crushonCookie) {
         authState.crushon.cookie = settings.crushonCookie;
         authState.crushon.displayName = settings.crushonDisplayName || null;
-        setServiceAuthHeader('crushon', { Cookie: `next-auth.session-token=${settings.crushonCookie}` });
+        const crushonCookieHeader = buildCrushonCookieHeader(settings.crushonCookie);
+        const crushonHeaders = crushonCookieHeader ? { Cookie: crushonCookieHeader } : null;
+        setServiceAuthHeader('crushon', crushonHeaders);
+        setServiceAuthHeader('crushon_likes', crushonHeaders);
     }
 }
 
@@ -247,11 +485,17 @@ export function applyServiceLogin(service, tokenOrCookie, extra = {}) {
             authState.sakura.token = tokenOrCookie;
             authState.sakura.displayName = extra.displayName || null;
             setServiceAuthHeader('sakura', tokenOrCookie ? { Authorization: `Bearer ${tokenOrCookie}` } : null);
+            setServiceAuthHeader('sakura_personal', tokenOrCookie ? { Authorization: `Bearer ${tokenOrCookie}` } : null);
             break;
         case 'crushon':
             authState.crushon.cookie = tokenOrCookie;
             authState.crushon.displayName = extra.displayName || null;
-            setServiceAuthHeader('crushon', tokenOrCookie ? { Cookie: `next-auth.session-token=${tokenOrCookie}` } : null);
+            {
+                const crushonCookieHeader = buildCrushonCookieHeader(tokenOrCookie);
+                const crushonHeaders = crushonCookieHeader ? { Cookie: crushonCookieHeader } : null;
+                setServiceAuthHeader('crushon', crushonHeaders);
+                setServiceAuthHeader('crushon_likes', crushonHeaders);
+            }
             break;
     }
 }
@@ -592,6 +836,7 @@ export async function verifySakuraToken(token) {
             },
             body: JSON.stringify({
                 offset: 0, search: '', allowNsfw: false, sortType: 'message-count', limit: 1,
+                creatorId: '',
                 favoritesOnly: true, followingOnly: false, blockedOnly: false,
                 eraseNsfw: false, tags: [], hideExplicit: false, matchType: 'any'
             })
@@ -602,15 +847,16 @@ export async function verifySakuraToken(token) {
 }
 
 /**
- * Verify a CrushOn session-token cookie via /api/auth/session.
+ * Verify a CrushOn session cookie or bare session-token value via /api/auth/session.
  * Returns user session object on success.
  */
 export async function verifyCrushonCookie(cookieStr) {
+    const crushonCookieHeader = buildCrushonCookieHeader(cookieStr);
     const response = await proxiedFetch('https://crushon.ai/api/auth/session', {
         service: 'crushon',
         fetchOptions: {
             headers: {
-                Cookie: `next-auth.session-token=${cookieStr}`,
+                Cookie: crushonCookieHeader,
                 Accept: 'application/json'
             }
         }
@@ -646,6 +892,7 @@ export async function fetchCharaVaultFavorites(options = {}) {
  */
 export async function fetchSakuraFavorites(token, options = {}) {
     const { limit = 100, offset = 0 } = options;
+    const effectiveToken = await ensureFreshSakuraToken({ required: true }).catch(() => String(token || '').trim());
     const response = await proxiedFetch('https://api.sakura.fm/api/get-characters', {
         service: 'sakura',
         fetchOptions: {
@@ -653,10 +900,11 @@ export async function fetchSakuraFavorites(token, options = {}) {
             headers: {
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
-                Authorization: `Bearer ${token}`
+                Authorization: `Bearer ${effectiveToken || token}`
             },
             body: JSON.stringify({
                 offset, search: '', allowNsfw: true, sortType: 'message-count', limit,
+                creatorId: '',
                 favoritesOnly: true, followingOnly: false, blockedOnly: false,
                 eraseNsfw: false, tags: [], hideExplicit: false, matchType: 'any'
             })
@@ -668,20 +916,88 @@ export async function fetchSakuraFavorites(token, options = {}) {
 
 /**
  * Fetch CrushOn liked characters via tRPC.
- * Returns array of character objects.
+ * Returns an array of character objects with a non-enumerable `total` property for paging.
  */
-export async function fetchCrushonLikes() {
+export async function fetchCrushonLikes(options = {}) {
+    const {
+        limit = 24,
+        offset = 0,
+    } = options;
     const noInputEncoded = encodeURIComponent(
         JSON.stringify({ '0': { json: null, meta: { values: ['undefined'] } } })
     );
-    const url = `https://crushon.ai/api/trpc/character.getAllThumbsUpCharactersByUserId?batch=1&input=${noInputEncoded}`;
-    const response = await proxiedFetch(url, {
-        service: 'crushon',
-        fetchOptions: { method: 'GET', headers: { Accept: 'application/json' } }
-    });
-    if (!response.ok) throw new Error(`CrushOn likes failed (${response.status})`);
-    const data = await response.json();
-    return data?.[0]?.result?.data?.json || [];
+    // Public relays may cache this auth-sensitive GET aggressively; bust the URL so likes reflect the live account state.
+    const url = `https://crushon.ai/api/trpc/character.getAllThumbsUpCharactersByUserId?batch=1&input=${noInputEncoded}&_bbts=${Date.now()}`;
+    const fetchOptions = { method: 'GET', headers: { Accept: 'application/json' } };
+    const publicRelayEnabled = isPublicRelayFallbackEnabled();
+    const publicAuthHeaders = getCrushonPublicRelayAuthHeaders();
+    let authTransportError = null;
+
+    const directAttempts = publicRelayEnabled
+        ? [[PROXY_TYPES.PLUGIN]]
+        : [[PROXY_TYPES.PLUGIN], [PROXY_TYPES.PUTER]];
+
+    for (const proxyChain of directAttempts) {
+        try {
+            const response = await proxiedFetch(url, {
+                service: 'crushon',
+                proxyChain,
+                fetchOptions,
+                timeoutMs: 15000,
+            });
+
+            if (!response.ok) {
+                throw new Error(`CrushOn likes failed (${response.status})`);
+            }
+
+            const data = await response.json();
+            return await parseCrushonLikesResponse(data, { limit, offset });
+        } catch (error) {
+            authTransportError = error;
+        }
+    }
+
+    const authHeaders = {
+        ...getAuthHeadersForService('crushon'),
+        ...getAuthHeadersForService('crushon_likes'),
+    };
+    const cookieHeader = String(authHeaders?.Cookie || authHeaders?.cookie || '').trim();
+    if (!cookieHeader || !cookieHeader.includes('=')) {
+        throw authTransportError || new Error('CrushOn likes failed: no auth-capable proxy available');
+    }
+
+    if (!publicRelayEnabled) {
+        throw new Error(buildCrushonRelayGuidance('CrushOn likes', authTransportError));
+    }
+
+    if (Object.keys(publicAuthHeaders).length === 0) {
+        throw new Error(`${buildCrushonRelayGuidance('CrushOn likes', authTransportError)} CrushOn relay fallback requires a NextAuth session cookie.`);
+    }
+
+    try {
+        const relayResponse = await proxiedFetch(url, {
+            service: 'crushon',
+            proxyChain: CRUSHON_PUBLIC_AUTH_PROXY_CHAIN,
+            allowPublicAuth: true,
+            publicAuthHeaders,
+            fetchOptions,
+            timeoutMs: 15000,
+        });
+
+        if (!relayResponse.ok) {
+            const detail = authTransportError?.message ? ` Direct auth transports failed first: ${authTransportError.message}` : '';
+            throw new Error(`CrushOn likes failed through the public relay chain (${relayResponse.status}).${detail}`);
+        }
+
+        const data = await relayResponse.json();
+        return await parseCrushonLikesResponse(data, { limit, offset });
+    } catch (error) {
+        const message = String(error?.message || '').trim();
+        if (message) {
+            throw new Error(message);
+        }
+        throw error;
+    }
 }
 
 // ─── Favorite toggle ──────────────────────────────────────────────────────────
@@ -696,13 +1012,14 @@ export async function toggleCharaVaultFavorite(path, isFavorited) {
 }
 
 export async function toggleSakuraFavorite(characterId, isFavorited, token) {
+    const effectiveToken = await ensureFreshSakuraToken({ required: true }).catch(() => String(token || '').trim());
     const response = await proxiedFetch('https://api.sakura.fm/api/favorite', {
         service: 'sakura',
         fetchOptions: {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`
+                Authorization: `Bearer ${effectiveToken || token}`
             },
             body: JSON.stringify({ characterId, action: isFavorited ? 'unfavorite' : 'favorite' })
         }

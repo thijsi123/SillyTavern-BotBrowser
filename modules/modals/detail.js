@@ -734,6 +734,7 @@ function setupDetailModalEvents(detailModal, detailOverlay, fullCard, state) {
 
 // Proxy chain for image fallback - uses corsProxy.js utilities
 const IMAGE_PROXY_CHAIN = [
+    PROXY_TYPES.CORS_EU_ORG,
     PROXY_TYPES.CORSPROXY_IO,
     PROXY_TYPES.CORS_LOL,
     PROXY_TYPES.PUTER
@@ -747,15 +748,45 @@ function revokeDetailObjectUrlIfAny(imageDiv) {
 }
 
 async function checkDetailImageExists(url) {
-    try {
-        // Use a proxy to check since direct fetch may fail due to CORS
-        const proxyUrl = buildProxyUrl(PROXY_TYPES.CORSPROXY_IO, url);
-        const response = await fetch(proxyUrl, { method: 'HEAD' });
-        return { exists: response.ok, status: response.status };
-    } catch {
-        // Can't determine, assume it might exist
-        return { exists: true, status: 0 };
+    let sawForbidden = false;
+
+    for (const proxyType of IMAGE_PROXY_CHAIN) {
+        try {
+            let response;
+            if (proxyType === PROXY_TYPES.PUTER) {
+                response = await proxiedFetch(url, {
+                    proxyChain: [PROXY_TYPES.PUTER],
+                    fetchOptions: { method: 'HEAD' },
+                    timeoutMs: 10000,
+                });
+            } else {
+                const proxyUrl = buildProxyUrl(proxyType, url);
+                if (!proxyUrl) continue;
+                response = await fetch(proxyUrl, { method: 'HEAD' });
+            }
+
+            if (response.ok) {
+                return { exists: true, status: response.status };
+            }
+
+            if (response.status === 404 || response.status === 410) {
+                return { exists: false, status: response.status };
+            }
+
+            if (response.status === 403) {
+                sawForbidden = true;
+            }
+        } catch {
+            // Try the next proxy before assuming the image is missing.
+        }
     }
+
+    if (sawForbidden) {
+        return { exists: false, status: 403 };
+    }
+
+    // Can't determine, assume it might exist
+    return { exists: true, status: 0 };
 }
 
 function tryDetailImageWithProxy(imageDiv, originalUrl, proxyIndex = 0, checkedExists = false) {
@@ -844,7 +875,7 @@ function validateDetailModalImage(detailModal, card) {
     const imageUrl = urlMatch[1];
 
     // Skip if already proxied
-    if (imageUrl.includes('corsproxy.io') || imageUrl.includes('cors.workers.dev') || imageUrl.startsWith('/proxy/')) {
+    if (imageUrl.includes('corsproxy.io') || imageUrl.includes('cors.eu.org') || imageUrl.includes('api.cors.lol') || imageUrl.includes('cors.workers.dev') || imageUrl.startsWith('/proxy/')) {
         return;
     }
 

@@ -47,6 +47,16 @@ export function sanitizeImageUrl(url) {
             if (match) {
                 trimmed = decodeURIComponent(match[1]);
             }
+        } else if (trimmed.includes('api.cors.lol/?url=')) {
+            const match = trimmed.match(/api\.cors\.lol\/\?url=(.+)/);
+            if (match) {
+                trimmed = decodeURIComponent(match[1]);
+            }
+        } else if (trimmed.includes('cors.eu.org/https://') || trimmed.includes('cors.eu.org/http://')) {
+            const match = trimmed.match(/cors\.eu\.org\/(https?:\/\/.+)$/);
+            if (match) {
+                trimmed = match[1];
+            }
         } else if (trimmed.includes('corsproxy.io/?')) {
             const afterProxy = trimmed.split('corsproxy.io/?')[1];
             if (afterProxy) {

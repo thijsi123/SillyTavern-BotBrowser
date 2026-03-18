@@ -36,9 +36,8 @@ function getSaucepanAuthProxyConfig() {
     }
 
     return {
-        // Saucepan lorebooks and open-definition endpoints return immediately through
-        // corsproxy.io with the user auth headers, while Puter frequently stalls.
-        proxyChain: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.NONE, PROXY_TYPES.CORS_LOL],
+        // Prefer cors.eu.org for auth-bearing relay requests; keep other transports as fallback.
+        proxyChain: [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.NONE, PROXY_TYPES.CORS_LOL],
         allowPublicAuth: true,
     };
 }

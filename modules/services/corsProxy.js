@@ -13,6 +13,27 @@ export const PROXY_TYPES = {
     NONE: 'none'
 };
 
+const PUBLIC_RELAY_PROXY_CHAIN = [
+    PROXY_TYPES.CORS_EU_ORG,
+    PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.CORS_LOL,
+];
+
+const PUBLIC_RELAY_PROXY_TYPES = new Set(PUBLIC_RELAY_PROXY_CHAIN);
+
+const PLUGIN_FIRST_PROXY_CHAIN = [
+    PROXY_TYPES.PLUGIN,
+    PROXY_TYPES.CORS_EU_ORG,
+    PROXY_TYPES.PUTER,
+    PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.CORS_LOL,
+];
+
+const DIRECT_FIRST_PROXY_CHAIN = [
+    PROXY_TYPES.NONE,
+    ...PLUGIN_FIRST_PROXY_CHAIN,
+];
+
 /**
  * Proxy configurations
  * Each proxy has different rate limits and compatibility
@@ -69,77 +90,77 @@ const PROXY_CONFIGS = {
  */
 const SERVICE_PROXY_MAP = {
     // JannyAI (Cloudflare) - keep it on the public relay chain, not the plugin path.
-    // corsproxy.io is the least noisy path here; fall back to Puter only if needed.
-    jannyai: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.PUTER],
-    jannyai_trending: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.PUTER],
+    // Prefer cors.eu.org because it currently preserves POST/headers while corsproxy.io is less reliable.
+    jannyai: [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    jannyai_trending: [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
 
-    // Character Tavern - corsproxy.io first, then Puter, then cors.lol
-    character_tavern: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
-    character_tavern_trending: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    // Character Tavern - plugin first, then the working public relay chain, then Puter.
+    character_tavern: PLUGIN_FIRST_PROXY_CHAIN,
+    character_tavern_trending: PLUGIN_FIRST_PROXY_CHAIN,
 
-    // Wyvern - corsproxy.io first, then Puter, then cors.lol
-    wyvern: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
-    wyvern_trending: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    // Wyvern - plugin first, then the working public relay chain, then Puter.
+    wyvern: PLUGIN_FIRST_PROXY_CHAIN,
+    wyvern_trending: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Chub - avoid direct attempts to prevent noisy CORS console errors; proxies are required for many endpoints.
-    chub: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
-    chub_gateway: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
-    chub_trending: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    chub: PLUGIN_FIRST_PROXY_CHAIN,
+    chub_gateway: PLUGIN_FIRST_PROXY_CHAIN,
+    chub_trending: PLUGIN_FIRST_PROXY_CHAIN,
 
-    // RisuRealm - corsproxy.io first, then Puter, then cors.lol
-    risuai_realm: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
-    risuai_realm_trending: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    // RisuRealm - plugin first, then the working public relay chain, then Puter.
+    risuai_realm: PLUGIN_FIRST_PROXY_CHAIN,
+    risuai_realm_trending: PLUGIN_FIRST_PROXY_CHAIN,
 
     // MLPChag (neocities) - CORS is allowed; do not proxy by default.
     mlpchag: [PROXY_TYPES.NONE],
 
     // /aicg/ live feed (Neocities HTML pages) - direct fetch is blocked from the standalone app.
-    anchorhold_live: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
+    anchorhold_live: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
 
     // Hosted Character Archive frontend - usually CORS-enabled Flask, so try direct first.
-    character_archive: [PROXY_TYPES.NONE, PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
+    character_archive: DIRECT_FIRST_PROXY_CHAIN,
 
-    // Backyard.ai - corsproxy.io first, then Puter, then cors.lol
-    backyard: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
-    backyard_trending: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    // Backyard.ai - plugin first, then the working public relay chain, then Puter.
+    backyard: PLUGIN_FIRST_PROXY_CHAIN,
+    backyard_trending: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Pygmalion.chat - direct fetch often fails CORS; use proxies to avoid preflight errors in console.
-    pygmalion: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
-    pygmalion_trending: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    pygmalion: PLUGIN_FIRST_PROXY_CHAIN,
+    pygmalion_trending: PLUGIN_FIRST_PROXY_CHAIN,
 
     // CharaVault - Cloudflare protected
-    charavault: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    charavault: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Sakura.fm
-    sakura: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    sakura: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Saucepan.ai
-    saucepan: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    saucepan: PLUGIN_FIRST_PROXY_CHAIN,
 
     // CrushOn.ai - Cloudflare + tRPC
-    crushon: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    crushon: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Harpy.chat - Supabase has CORS headers but custom headers need proxy
-    harpy: [PROXY_TYPES.NONE, PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    harpy: DIRECT_FIRST_PROXY_CHAIN,
 
     // Botify.ai - Strapi CMS, anonymous OK
-    botify: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    botify: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Joyland.ai - POST-based API
-    joyland: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    joyland: PLUGIN_FIRST_PROXY_CHAIN,
 
     // SpicyChat.ai - Typesense (direct fetch blocked by CORS from browser)
-    spicychat: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    spicychat: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Talkie AI - MiniMax platform, requires signed headers (custom x-token/x-sign); Puter handles these better
-    talkie: [PROXY_TYPES.PLUGIN, PROXY_TYPES.PUTER, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL],
+    talkie: [PROXY_TYPES.PLUGIN, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL],
 
     // CAIBotList - HTML pages + HTMX
-    caibotlist: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
-    caibotlist_trending: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL],
+    caibotlist: PLUGIN_FIRST_PROXY_CHAIN,
+    caibotlist_trending: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Default fallback chain
-    default: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL]
+    default: PLUGIN_FIRST_PROXY_CHAIN
 };
 
 const PUTER_CDN_URL = 'https://js.puter.com/v2/';
@@ -558,12 +579,20 @@ export async function proxiedFetch(url, options = {}) {
         fetchOptions = {},
         timeoutMs = DEFAULT_TIMEOUT_MS,
         allowPublicAuth = false,
+        publicAuthHeaders = null,
     } = options;
 
     const authHeaders = getGlobalAuthHeadersForService(service);
     const authHeaderObj = authHeaders ? headersToObject(authHeaders) : {};
+    const explicitPublicAuthHeaderObj = publicAuthHeaders != null
+        ? headersToObject(publicAuthHeaders)
+        : null;
+    const publicAuthHeaderObj = allowPublicAuth
+        ? (explicitPublicAuthHeaderObj ?? authHeaderObj)
+        : {};
     const requestHeaderObj = headersToObject(fetchOptions.headers);
     const hasAuthHeaders = Object.keys(authHeaderObj).length > 0;
+    const hasPublicAuthHeaders = Object.keys(publicAuthHeaderObj).length > 0;
 
     let proxies = proxyChain || getProxyChainForService(service);
     const pluginReady = proxies.includes(PROXY_TYPES.PLUGIN)
@@ -575,10 +604,8 @@ export async function proxiedFetch(url, options = {}) {
         proxies = proxies.filter((proxyType) => proxyType !== PROXY_TYPES.PLUGIN);
     }
 
-    if (pluginReady && !allowPublicRelayFallback) {
-        proxies = proxies.filter((proxyType) =>
-            proxyType !== PROXY_TYPES.CORSPROXY_IO && proxyType !== PROXY_TYPES.CORS_LOL
-        );
+    if (!allowPublicRelayFallback) {
+        proxies = proxies.filter((proxyType) => !PUBLIC_RELAY_PROXY_TYPES.has(proxyType));
     }
 
     // If the caller configured auth headers for this service, prefer a proxy that can actually
@@ -604,8 +631,8 @@ export async function proxiedFetch(url, options = {}) {
         : fetchOptions;
 
     // For public proxies, strip sensitive headers (including any configured auth headers).
-    const proxyHeaderObj = hasAuthHeaders && allowPublicAuth
-        ? { ...authHeaderObj, ...requestHeaderObj }
+    const proxyHeaderObj = hasPublicAuthHeaders
+        ? { ...publicAuthHeaderObj, ...requestHeaderObj }
         : stripSensitiveHeadersForPublicProxy(requestHeaderObj, authHeaderObj);
     const proxyFetchOptions = Object.keys(proxyHeaderObj).length > 0
         ? { ...fetchOptions, headers: proxyHeaderObj }
@@ -637,7 +664,7 @@ export async function proxiedFetch(url, options = {}) {
                 response = await puterFetch(url, directFetchOptions, timeoutMs);
             } else {
                 const proxyUrl = buildProxyUrl(proxyType, url, {
-                    reqHeaders: hasAuthHeaders && allowPublicAuth ? authHeaderObj : null,
+                    reqHeaders: hasPublicAuthHeaders ? publicAuthHeaderObj : null,
                 });
                 if (!proxyUrl) {
                     continue;
@@ -764,4 +791,4 @@ export function preloadPuter() {
 }
 
 // Legacy exports for backward compatibility
-export const CORS_PROXY = 'https://corsproxy.io/?url=';
+export const CORS_PROXY = 'https://cors.eu.org/';

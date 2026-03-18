@@ -1847,8 +1847,8 @@ function setupSourceButtons(menu) {
                         return;
                     }
                     toastr.info('Loading CrushOn Likes...', '', { timeOut: 2000 });
-                    const crushLikes = await fetchCrushonLikes();
-                    cards = (crushLikes || []).map(transformCrushonCard);
+                    const crushLikes = await fetchCrushonLikes({ limit: 100, offset: 0 });
+                    cards = (Array.isArray(crushLikes) ? crushLikes : []).map(transformCrushonCard);
                     console.log(`[Bot Browser] Loaded ${cards.length} CrushOn liked characters`);
                 } else {
                     toastr.info(`Loading ${sourceName}...`, '', { timeOut: 2000 });

@@ -1,10 +1,24 @@
 // Joyland.ai API Module
 // Vue 3 SPA, POST-based API, fingerprint required for rate limiting
 
-import { getAuthHeadersForService, proxiedFetch } from './corsProxy.js';
+import { getAuthHeadersForService, proxiedFetch, PROXY_TYPES } from './corsProxy.js';
 
 const API_BASE = 'https://api.joyland.ai';
 const joylandDetailCache = new Map();
+const JOYLAND_GET_PROXY_CHAIN = [
+    PROXY_TYPES.PLUGIN,
+    PROXY_TYPES.CORS_EU_ORG,
+    PROXY_TYPES.PUTER,
+    PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.CORS_LOL,
+];
+const JOYLAND_POST_PROXY_CHAIN = [
+    PROXY_TYPES.PLUGIN,
+    PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.PUTER,
+    PROXY_TYPES.CORS_EU_ORG,
+    PROXY_TYPES.CORS_LOL,
+];
 
 // Joyland requires a FingerPrint header on all requests.
 // Prefer the real FingerprintJS ID from Joyland's own localStorage key ('fingerprint').
@@ -26,25 +40,38 @@ function getFingerprint() {
 }
 
 function getBaseHeaders(options = {}) {
-    const { includeAuth = false } = options;
-    return {
-        'source-platform': 'JL-PC',
-        'FingerPrint': getFingerprint(),
-        'Content-Type': 'application/json',
+    const { includeAuth = false, method = 'GET' } = options;
+    const normalizedMethod = String(method || 'GET').toUpperCase();
+    const headers = {
         'Accept': 'application/json',
         ...(includeAuth ? getAuthHeadersForService('joyland') : {}),
     };
+
+    // cors.eu.org handles Joyland GETs cleanly only when the request stays "simple".
+    // Joyland's custom FingerPrint/source-platform headers trigger a browser preflight
+    // that cors.eu.org does not allow, so only attach them for non-GET requests.
+    if (normalizedMethod !== 'GET') {
+        headers['source-platform'] = 'JL-PC';
+        headers['FingerPrint'] = getFingerprint();
+        headers['Content-Type'] = 'application/json';
+    }
+
+    return headers;
 }
 
 async function fetchJoylandJson(url, fetchOptions = {}, options = {}) {
     const { requireAuth = false, allowAuthRetry = false } = options;
+    const normalizedMethod = String(fetchOptions?.method || 'GET').toUpperCase();
+    const proxyChain = normalizedMethod === 'GET' ? JOYLAND_GET_PROXY_CHAIN : JOYLAND_POST_PROXY_CHAIN;
     const baseFetchOptions = {
         ...fetchOptions,
-        headers: getBaseHeaders({ includeAuth: requireAuth }),
+        method: normalizedMethod,
+        headers: getBaseHeaders({ includeAuth: requireAuth, method: normalizedMethod }),
     };
 
     const response = await proxiedFetch(url, {
         service: 'joyland',
+        proxyChain,
         fetchOptions: baseFetchOptions,
     });
 
@@ -58,9 +85,11 @@ async function fetchJoylandJson(url, fetchOptions = {}, options = {}) {
         if (authHeaders && Object.keys(authHeaders).length > 0) {
             const retryResponse = await proxiedFetch(url, {
                 service: 'joyland',
+                proxyChain,
                 fetchOptions: {
                     ...fetchOptions,
-                    headers: getBaseHeaders({ includeAuth: true }),
+                    method: normalizedMethod,
+                    headers: getBaseHeaders({ includeAuth: true, method: normalizedMethod }),
                 },
             });
             if (!retryResponse.ok) throw new Error(`Joyland API error: ${retryResponse.status}`);

@@ -2,6 +2,7 @@
 // AI character chat platform - NSFW NOT auth-gated (allowNsfw param)
 
 import { proxiedFetch } from './corsProxy.js';
+import { ensureFreshSakuraToken } from './authManager.js';
 
 const BASE = 'https://api.sakura.fm';
 
@@ -41,7 +42,7 @@ export async function searchSakuraCharacters(options = {}) {
         limit = 24,
         allowNsfw = false,
         tags = [],
-        creatorId = null,
+        creatorId = '',
         favoritesOnly = false,
         followingOnly = false,
         blockedOnly = false,
@@ -50,13 +51,18 @@ export async function searchSakuraCharacters(options = {}) {
         hideExplicit = false,
     } = options;
 
+    if (favoritesOnly || followingOnly || blockedOnly) {
+        await ensureFreshSakuraToken({ required: true });
+    }
+
+    const normalizedCreatorId = typeof creatorId === 'string' ? creatorId : '';
     const body = {
         offset,
         search,
         allowNsfw,
         sortType,
         limit,
-        creatorId,
+        creatorId: normalizedCreatorId,
         matchType: matchType === 'all' ? 'all' : 'any',
         favoritesOnly,
         followingOnly,
@@ -118,9 +124,14 @@ export async function getSakuraCreatorCharacters(creatorId, options = {}) {
         hideExplicit = false,
         tags = [],
     } = options;
+
+    if (favoritesOnly || followingOnly || blockedOnly) {
+        await ensureFreshSakuraToken({ required: true });
+    }
+
     const body = {
         offset, search: '', allowNsfw, sortType: 'message-count', limit,
-        creatorId,
+        creatorId: typeof creatorId === 'string' ? creatorId : '',
         matchType: matchType === 'all' ? 'all' : 'any',
         favoritesOnly,
         followingOnly,

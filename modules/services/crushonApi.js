@@ -7,9 +7,16 @@ const BASE = 'https://crushon.ai/api/trpc';
 const CRUSHON_CREATOR_PROXY_CHAIN = [
     PROXY_TYPES.PLUGIN,
     PROXY_TYPES.PUTER,
+    PROXY_TYPES.CORS_EU_ORG,
     PROXY_TYPES.CORSPROXY_IO,
     PROXY_TYPES.CORS_LOL,
 ];
+const CRUSHON_PUBLIC_AUTH_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO];
+const CRUSHON_PUBLIC_PROXY_TYPES = new Set([
+    PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.CORS_EU_ORG,
+    PROXY_TYPES.CORS_LOL,
+]);
 
 export let crushonApiState = {
     cursor: null,
@@ -26,8 +33,38 @@ export function resetCrushonState() {
 }
 
 function trpcUrl(procedure, input) {
-    const encoded = encodeURIComponent(JSON.stringify({ '0': { json: input } }));
+    const encoded = encodeURIComponent(JSON.stringify(buildTrpcBatchPayload(input)));
     return `${BASE}/${procedure}?batch=1&input=${encoded}`;
+}
+
+function buildTrpcBatchPayload(input) {
+    return { '0': { json: input } };
+}
+
+function buildTrpcRequest(procedure, input, options = {}) {
+    const { method = 'GET', extraHeaders = {} } = options;
+    const normalizedMethod = String(method || 'GET').toUpperCase();
+    const url = normalizedMethod === 'POST'
+        ? `${BASE}/${procedure}?batch=1`
+        : trpcUrl(procedure, input);
+    const headers = {
+        Accept: 'application/json',
+        ...extraHeaders,
+    };
+    const fetchOptions = {
+        method: normalizedMethod,
+        headers,
+    };
+
+    if (normalizedMethod === 'POST') {
+        fetchOptions.headers = {
+            ...headers,
+            'Content-Type': 'application/json',
+        };
+        fetchOptions.body = JSON.stringify(buildTrpcBatchPayload(input));
+    }
+
+    return { url, fetchOptions };
 }
 
 const CRUSHON_CREATOR_CACHE_KEY = 'botbrowser-crushon-creator-id-cache';
@@ -81,21 +118,28 @@ function getRememberedCrushonCreatorId(name) {
     return String(getCrushonCreatorIdCache().get(normalizedName) || '').trim();
 }
 
-function buildCorsProxyIoUrl(targetUrl, reqHeaders = {}) {
-    let proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
-
-    for (const [header, value] of Object.entries(reqHeaders || {})) {
-        if (value == null || value === '') continue;
-        proxyUrl += `&reqHeaders=${encodeURIComponent(`${header}:${value}`)}`;
-    }
-
-    return proxyUrl;
-}
-
 function getCrushonFullCookieHeader() {
     const authHeaders = getAuthHeadersForService('crushon');
     const cookieHeader = String(authHeaders?.Cookie || authHeaders?.cookie || '').trim();
     return cookieHeader.includes('=') ? cookieHeader : '';
+}
+
+export function getCrushonPublicRelayAuthHeaders() {
+    const cookieHeader = getCrushonFullCookieHeader();
+    if (!cookieHeader) return {};
+
+    const cookies = parseCookieHeader(cookieHeader);
+    const allowedCookiePairs = Object.entries(cookies)
+        .filter(([name]) => /^(?:__Secure-)?next-auth\.session-token(?:\.\d+)?$/i.test(String(name || '').trim()))
+        .map(([name, value]) => `${name}=${value}`);
+
+    if (allowedCookiePairs.length === 0) {
+        return {};
+    }
+
+    return {
+        Cookie: allowedCookiePairs.join('; '),
+    };
 }
 
 function parseCookieHeader(cookieHeader) {
@@ -113,16 +157,43 @@ function parseCookieHeader(cookieHeader) {
     return cookies;
 }
 
-function getCrushonRelayHeaders(extraHeaders = {}) {
-    const cookieHeader = getCrushonFullCookieHeader();
-    if (!cookieHeader) return null;
+function isCrushonPublicRelayFallbackEnabled() {
+    try {
+        if (typeof window === 'undefined') return true;
+        return window.__BOT_BROWSER_ALLOW_PUBLIC_RELAY_FALLBACK === true;
+    } catch {
+        return true;
+    }
+}
 
-    return {
-        Accept: 'application/json',
-        Cookie: cookieHeader,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-        ...extraHeaders,
-    };
+function buildCrushonRelayDisabledGuidance(operation) {
+    return `${operation} could not be loaded because "Allow Public CORS Relay Fallback" is disabled and no non-public transport was available. Enable it in Settings -> Connections -> BotBrowser Plugin to retry through public relays.`;
+}
+
+function getCrushonProxyChain(proxyChain = null) {
+    const sourceChain = Array.isArray(proxyChain) && proxyChain.length > 0
+        ? proxyChain
+        : getProxyChainForService('crushon');
+    const deduped = [];
+    const seen = new Set();
+
+    for (const proxyType of sourceChain) {
+        if (!proxyType || seen.has(proxyType)) continue;
+        seen.add(proxyType);
+        deduped.push(proxyType);
+    }
+
+    if (isCrushonPublicRelayFallbackEnabled()) {
+        return deduped;
+    }
+
+    return deduped.filter((proxyType) => !CRUSHON_PUBLIC_PROXY_TYPES.has(proxyType));
+}
+
+function buildCrushonAuthRelayGuidance(operation, directTransportError = null) {
+    const directMessage = String(directTransportError?.message || '').trim();
+    const detail = directMessage ? ` Direct auth transports failed first: ${directMessage}` : '';
+    return `${operation} could not be loaded through the BotBrowser plugin or Puter. Enable "Allow Public CORS Relay Fallback" in Settings -> Connections -> BotBrowser Plugin to retry through the configured public relays.${detail}`;
 }
 
 function buildCrushonSearchHeaders(options = {}) {
@@ -191,19 +262,21 @@ function extractCrushonUserSearchPayload(result) {
 }
 
 async function fetchTrpc(procedure, input, options = {}) {
-    const { validate = null, proxyChain = null, service = 'crushon', extraHeaders = {} } = options;
-    const url = trpcUrl(procedure, input);
-    const proxies = Array.isArray(proxyChain) && proxyChain.length > 0
-        ? proxyChain
-        : getProxyChainForService(service);
+    const { validate = null, proxyChain = null, service = 'crushon', extraHeaders = {}, method = 'GET' } = options;
+    const { url, fetchOptions } = buildTrpcRequest(procedure, input, { method, extraHeaders });
+    const proxies = getCrushonProxyChain(proxyChain);
     let lastError = null;
+
+    if (proxies.length === 0) {
+        throw new Error(buildCrushonRelayDisabledGuidance(`CrushOn request "${procedure}"`));
+    }
 
     for (const proxyType of proxies) {
         try {
             const response = await proxiedFetch(url, {
                 service,
                 proxyChain: [proxyType],
-                fetchOptions: { method: 'GET', headers: { Accept: 'application/json', ...extraHeaders } }
+                fetchOptions,
             });
             if (!response.ok) throw new Error(`CrushOn API error: ${response.status}`);
             const data = await response.json();
@@ -235,41 +308,83 @@ async function fetchTrpcViaCrushonAuthRelay(procedure, input, options = {}) {
     const {
         validate = null,
         extraHeaders = {},
+        method = 'GET',
     } = options;
-
-    const relayHeaders = getCrushonRelayHeaders(extraHeaders);
-    if (!relayHeaders) {
-        throw new Error('CrushOn full Cookie header not available for relay fetch');
+    if (!getCrushonFullCookieHeader()) {
+        throw new Error('CrushOn Cookie header not available for auth fetch');
     }
 
-    const response = await fetch(buildCorsProxyIoUrl(trpcUrl(procedure, input), relayHeaders), {
-        method: 'GET',
-        headers: {
-            Accept: 'application/json',
+    const { url, fetchOptions } = buildTrpcRequest(procedure, input, { method, extraHeaders });
+    const publicRelayEnabled = isCrushonPublicRelayFallbackEnabled();
+    const publicAuthHeaders = getCrushonPublicRelayAuthHeaders();
+    const attempts = [
+        {
+            proxyChain: [PROXY_TYPES.PLUGIN],
+            allowPublicAuth: false,
         },
-    });
+    ];
 
-    if (!response.ok) {
-        throw new Error(`CrushOn relay fetch failed: ${response.status}`);
+    if (publicRelayEnabled && Object.keys(publicAuthHeaders).length > 0) {
+        attempts.push({
+            proxyChain: CRUSHON_PUBLIC_AUTH_PROXY_CHAIN,
+            allowPublicAuth: true,
+            publicAuthHeaders,
+        });
+    } else {
+        attempts.push({
+            proxyChain: [PROXY_TYPES.PUTER],
+            allowPublicAuth: false,
+        });
     }
 
-    const data = await response.json();
-    const payload = extractTrpcPayload(data);
+    let lastError = null;
 
-    if (validate) {
-        const verdict = await validate(payload, data);
-        if (verdict === false) {
-            throw new Error(`CrushOn payload validation failed for ${procedure}`);
-        }
-        if (typeof verdict === 'string') {
-            throw new Error(verdict);
-        }
-        if (verdict && typeof verdict === 'object' && verdict.ok === false) {
-            throw new Error(verdict.reason || `CrushOn payload validation failed for ${procedure}`);
+    for (const attempt of attempts) {
+        try {
+            const response = await proxiedFetch(url, {
+                service: 'crushon',
+                proxyChain: attempt.proxyChain,
+                allowPublicAuth: attempt.allowPublicAuth,
+                publicAuthHeaders: attempt.publicAuthHeaders || null,
+                fetchOptions,
+            });
+
+            if (!response.ok) {
+                throw new Error(`CrushOn auth fetch failed: ${response.status}`);
+            }
+
+            const data = await response.json();
+            const payload = extractTrpcPayload(data);
+
+            if (validate) {
+                const verdict = await validate(payload, data);
+                if (verdict === false) {
+                    throw new Error(`CrushOn payload validation failed for ${procedure}`);
+                }
+                if (typeof verdict === 'string') {
+                    throw new Error(verdict);
+                }
+                if (verdict && typeof verdict === 'object' && verdict.ok === false) {
+                    throw new Error(verdict.reason || `CrushOn payload validation failed for ${procedure}`);
+                }
+            }
+
+            return payload;
+        } catch (error) {
+            lastError = error;
         }
     }
 
-    return payload;
+    if (!isCrushonPublicRelayFallbackEnabled()) {
+        throw new Error(buildCrushonAuthRelayGuidance('CrushOn authenticated source data', lastError));
+    }
+
+    const lastMessage = String(lastError?.message || '').trim();
+    if (lastMessage) {
+        throw new Error(lastMessage);
+    }
+
+    throw new Error(`CrushOn auth fetch failed: ${procedure}`);
 }
 
 async function fetchCrushonPublicCollectionSnapshot(userId, nsfw = false, locale = 'en', options = {}) {
@@ -294,19 +409,10 @@ async function fetchCrushonPublicCollectionSnapshot(userId, nsfw = false, locale
         direction: 'forward',
     };
 
-    const endpoint = trpcUrl('character.queryUserCharacters', input);
-    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(endpoint)}&reqHeaders=${encodeURIComponent('Accept:application/json')}`;
-    const response = await fetch(proxyUrl, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
+    const payload = await fetchTrpc('character.queryUserCharacters', input, {
+        proxyChain: [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
+        service: 'default',
     });
-
-    if (!response.ok) {
-        throw new Error(`CrushOn public creator snapshot error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const payload = extractTrpcPayload(data);
     const { characters, nextCursor, total } = extractCrushonCollectionPayload(payload);
 
     return {
@@ -333,7 +439,7 @@ export async function getCrushonPublicCreatorSummary(userId, locale = 'en', opti
 
     const profile = await getCrushonUserProfile(userId, {
         includeAuthHeaders: false,
-        proxyChain: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
+        proxyChain: [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
         service: 'default',
     }).catch(() => null);
     const sfwResult = await fetchCrushonPublicCollectionSnapshot(userId, false, locale, sharedOptions).catch(() => ({
@@ -516,6 +622,7 @@ export async function searchCrushonUsers(options = {}) {
     const result = await fetchTrpc('search.searchUser', input, {
         proxyChain,
         service,
+        method: 'POST',
         validate: (payload) => {
             const { users, total } = extractCrushonUserSearchPayload(payload);
             if (total > 0 && users.length === 0) {
@@ -697,7 +804,12 @@ async function getCrushonUserProfileViaRelay(userId) {
 }
 
 function normalizeCrushonCreatorLabel(value) {
-    return String(value || '').trim().toLowerCase();
+    return String(value || '')
+        .toLowerCase()
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^\p{L}\p{N}]+/gu, '')
+        .trim();
 }
 
 function parseCrushonHumanCount(value) {
@@ -721,8 +833,12 @@ async function fetchCrushonProfilePageHtml(userId) {
     if (!userId) return '';
 
     const url = `https://crushon.ai/profile/${encodeURIComponent(userId)}`;
-    const proxies = [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER];
+    const proxies = getCrushonProxyChain([PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER]);
     let lastError = null;
+
+    if (proxies.length === 0) {
+        throw new Error(buildCrushonRelayDisabledGuidance('CrushOn creator profile page'));
+    }
 
     for (const proxyType of proxies) {
         try {
@@ -905,7 +1021,6 @@ async function resolveCrushonUserIdByCreatorName(creatorName, options = {}) {
     if (!needle) return '';
 
     const rememberedId = getRememberedCrushonCreatorId(creatorName);
-    if (rememberedId) return rememberedId;
 
     try {
         const userSearch = await searchCrushonUsers({
@@ -945,7 +1060,7 @@ async function resolveCrushonUserIdByCreatorName(creatorName, options = {}) {
             });
 
         const bestUser = rankedUsers[0];
-        if (bestUser?.id) {
+        if (bestUser?.id && bestUser.characterNum > 0) {
             rememberCrushonCreatorIdentity(bestUser.name || creatorName, bestUser.id);
             return bestUser.id;
         }
@@ -1001,7 +1116,7 @@ async function resolveCrushonUserIdByCreatorName(creatorName, options = {}) {
         return b.messageCount - a.messageCount;
     });
 
-    return ranked[0]?.id || '';
+    return ranked[0]?.id || rememberedId || '';
 }
 
 export async function getCrushonCreatorCharacters(userNeedle, locale = 'en', options = {}) {
@@ -1042,7 +1157,7 @@ export async function getCrushonCreatorCharacters(userNeedle, locale = 'en', opt
         count: Math.min(count, 12),
         gender,
         filterTags,
-        proxyChain: [PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
+        proxyChain: [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
         service: 'default',
         allowEmptyCharactersWithTotal: true,
     };
@@ -1220,8 +1335,8 @@ export function transformCrushonCard(card) {
         updated_at: normalizeCrushonTimestamp(card.updateAt || card.updatedAt || ''),
         possibleNsfw: card.rating >= 2 || false,
         likeCount: card.likes || card.metric?.likeCount || 0,
-        messageCount: card.metric?.message_count || 0,
-        total_chars: card.messages || card.metric?.message_count || 0,
+        messageCount: card.metric?.message_count || card.messages || 0,
+        total_chars: card.createOcNeedChars || card.create_oc_need_chars || card.total_chars || 0,
         visibility: card.visibility,
         reviewState: card.reviewState,
         reviewMsg: card.reviewMsg || '',
@@ -1338,7 +1453,8 @@ export function transformFullCrushonCharacter(char) {
         creatorName ? `Creator: ${creatorName}` : '',
         char.appearance ? `Appearance: ${char.appearance}` : '',
         char.likes ? `Likes: ${Number(char.likes).toLocaleString()}` : '',
-        char.messages ? `Total chars: ${Number(char.messages).toLocaleString()}` : '',
+        char.messages ? `Messages: ${Number(char.messages).toLocaleString()}` : '',
+        char.createOcNeedChars ? `Total chars: ${Number(char.createOcNeedChars).toLocaleString()}` : '',
         char.conversationCount ? `Conversations: ${Number(char.conversationCount).toLocaleString()}` : '',
         char.thumbsUpCount ? `Thumbs up: ${Number(char.thumbsUpCount).toLocaleString()}` : '',
         char.shareCount ? `Shares: ${Number(char.shareCount).toLocaleString()}` : '',
@@ -1372,9 +1488,10 @@ export function transformFullCrushonCharacter(char) {
         definitionVisibility: char.definitionVisibility,
         reviewState: char.reviewState,
         reviewMsg: char.reviewMsg || '',
+        messageCount: char.messages || 0,
         conversationCount: char.conversationCount || 0,
         canShowAlbumCount: char.canShowAlbumCount || 0,
-        total_chars: char.messages || 0,
+        total_chars: char.createOcNeedChars || char.create_oc_need_chars || char.total_chars || 0,
         visibility: char.visibility,
         _creatorId: creatorId,
         created_at: normalizeCrushonTimestamp(char.createAt || char.createdAt || ''),

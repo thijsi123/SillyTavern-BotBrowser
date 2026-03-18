@@ -545,24 +545,11 @@ export async function getCharacterTavernLorebook(id) {
     if (!id) return null;
 
     const url = `${CT_SITE_BASE}/api/character/${id}/lorebook`;
-    let response;
-    try {
-        response = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`, {
-            headers: {
-                Accept: 'application/json',
-            },
-        });
-    } catch {
-        response = null;
-    }
-
-    if (!response || !response.ok) {
-        response = await characterTavernFetch(url, {
-            headers: {
-                Accept: 'application/json',
-            },
-        });
-    }
+    const response = await characterTavernFetch(url, {
+        headers: {
+            Accept: 'application/json',
+        },
+    });
 
     if (!response.ok) {
         if (response.status === 404) return null;

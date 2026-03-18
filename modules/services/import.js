@@ -67,7 +67,9 @@ export async function importCharacterFile(file, preservedName = null) {
 
 // Proxy chain for image fetching - uses corsProxy.js utilities
 const IMAGE_PROXY_CHAIN = [
+    PROXY_TYPES.CORS_EU_ORG,
     PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.CORS_LOL,
     PROXY_TYPES.PUTER
 ];
 
