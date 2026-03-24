@@ -92,6 +92,25 @@ export function transformMlpchagCard(key, node) {
     const parts = key.split('/');
     const author = parts.length > 1 ? parts[0] : 'Unknown';
     const filename = parts.length > 1 ? parts.slice(1).join('/') : key;
+    const greetings = Array.isArray(node.greetings) ? node.greetings.filter(Boolean) : [];
+    const alternateGreetings = Array.isArray(node.alternate_greetings) ? node.alternate_greetings.filter(Boolean) : [];
+    const exampleEntries = Array.isArray(node.examples)
+        ? node.examples.filter(Boolean)
+        : (node.examples ? [node.examples] : (node.mes_example ? [node.mes_example] : []));
+    const descSearch = [
+        node.description || '',
+        node.scenario || '',
+        node.personality || '',
+        ...greetings,
+        ...alternateGreetings,
+        ...exampleEntries,
+        node.creator_notes || '',
+        node.system_prompt || '',
+        node.post_history_instructions || '',
+    ]
+        .filter(Boolean)
+        .join('\n')
+        .substring(0, 4000);
 
     // Build image URL - encode each path segment to handle special characters (spaces, parentheses, etc.)
     const encodedKey = parts.map(part => encodeURIComponent(part)).join('/');
@@ -143,14 +162,14 @@ export function transformMlpchagCard(key, node) {
         tags: tags,
         description: node.description || '',
         desc_preview: node.description ? node.description.substring(0, 200) : '',
-        desc_search: node.description || '',
+        desc_search: descSearch,
         created_at: createdAt,
         updated_at: updatedAt,
         nTokens: tokenCount,
         scenario: node.scenario || '',
         personality: node.personality || '',
-        first_message: node.greetings?.[0] || node.first_mes || '',
-        alternate_greetings: node.greetings?.slice(1) || node.alternate_greetings || [],
+        first_message: greetings[0] || node.first_mes || '',
+        alternate_greetings: greetings.slice(1).length > 0 ? greetings.slice(1) : alternateGreetings,
         examples: node.examples || node.mes_example || '',
         creator_notes: node.creator_notes || '',
         system_prompt: node.system_prompt || '',

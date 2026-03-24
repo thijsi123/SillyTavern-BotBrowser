@@ -1,10 +1,23 @@
 // Pygmalion.chat API Module
 // Uses Connect RPC protocol at server.pygmalion.chat
 
-import { getAuthHeadersForService, proxiedFetch } from './corsProxy.js';
+import { proxiedFetch } from './corsProxy.js';
+import { assertFreshPygmalionToken } from './authManager.js';
 
 const PYGMALION_SERVER_BASE = 'https://server.pygmalion.chat';
 const PYGMALION_API_BASE = `${PYGMALION_SERVER_BASE}/galatea.v1.PublicCharacterService`;
+
+function getPygmalionRequestAuthHeaders({ required = false } = {}) {
+    try {
+        const token = assertFreshPygmalionToken({ required });
+        return token ? { Authorization: `Bearer ${token}` } : {};
+    } catch (error) {
+        if (!required) {
+            return {};
+        }
+        throw error;
+    }
+}
 
 /**
  * Sort type options for Pygmalion
@@ -41,7 +54,7 @@ async function fetchPygmalionApi(method, input) {
                 'Accept': '*/*',
                 'Content-Type': 'application/json',
                 'Connect-Protocol-Version': '1',
-                ...getAuthHeadersForService('pygmalion'),
+                ...getPygmalionRequestAuthHeaders({ required: false }),
             },
             body: JSON.stringify(input)
         }
@@ -144,7 +157,7 @@ export async function getPygmalionExportCharacter(characterId) {
         fetchOptions: {
             headers: {
                 Accept: 'application/json',
-                ...getAuthHeadersForService('pygmalion'),
+                ...getPygmalionRequestAuthHeaders({ required: false }),
             },
         },
     });
@@ -170,7 +183,7 @@ async function fetchPygmalionConnectGet(path, message = {}, { auth = false } = {
             method: 'GET',
             headers: {
                 Accept: '*/*',
-                ...(auth ? getAuthHeadersForService('pygmalion') : {}),
+                ...(auth ? getPygmalionRequestAuthHeaders({ required: true }) : {}),
             },
         },
     });
@@ -192,7 +205,7 @@ async function fetchPygmalionConnectPost(path, body = {}, { auth = true } = {}) 
                 'Accept': '*/*',
                 'Content-Type': 'application/json',
                 'Connect-Protocol-Version': '1',
-                ...(auth ? getAuthHeadersForService('pygmalion') : {}),
+                ...(auth ? getPygmalionRequestAuthHeaders({ required: true }) : {}),
             },
             body: JSON.stringify(body || {}),
         },
@@ -315,20 +328,28 @@ export async function getPygmalionFollowedUsers() {
  */
 export function transformPygmalionCard(char) {
     const tags = char.tags || [];
+    const personality = char.personality || {};
+    const description = personality.persona || char.description || '';
+    const greeting = personality.greeting || '';
+    const creatorNotes = personality.characterNotes || '';
 
     return {
         id: char.id,
         name: char.displayName || 'Unnamed',
-        creator: char.owner?.displayName || char.owner?.username || 'Unknown',
+        creator: personality.creator || char.owner?.displayName || char.owner?.username || 'Unknown',
         creatorId: char.owner?.id || '',
         creatorUsername: char.owner?.username || '',
         avatar_url: char.avatarUrl || '',
         image_url: char.avatarUrl || '',
         source_url: `https://pygmalion.chat/chat/${char.id}`,
         tags: tags,
-        description: char.description || '',
-        desc_preview: char.description ? char.description.substring(0, 200) : '',
-        desc_search: char.description || '',
+        description,
+        desc_preview: description ? description.substring(0, 200) : '',
+        desc_search: [description, greeting, creatorNotes].filter(Boolean).join(' '),
+        personality: personality.persona || '',
+        first_mes: greeting,
+        first_message: greeting,
+        creator_notes: creatorNotes,
         created_at: char.createdAt ? new Date(parseInt(char.createdAt) * 1000).toISOString() : null,
         updated_at: char.updatedAt ? new Date(parseInt(char.updatedAt) * 1000).toISOString() : null,
         approved_at: char.approvedAt ? new Date(parseInt(char.approvedAt) * 1000).toISOString() : null,

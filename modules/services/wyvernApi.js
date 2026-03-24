@@ -3,6 +3,7 @@
 // Public lorebooks API: https://app.wyvern.chat/api/lorebooks/public
 
 import { getAuthHeadersForService, proxiedFetch } from './corsProxy.js';
+import { ensureFreshWyvernToken } from './authManager.js';
 
 const WYVERN_API_BASE = 'https://app.wyvern.chat/api';
 let wyvernMePromise = null;
@@ -49,6 +50,7 @@ async function fetchWyvernResponse(url, service = 'wyvern') {
 async function fetchWyvernMe() {
     if (!wyvernMePromise) {
         wyvernMePromise = (async () => {
+            await ensureFreshWyvernToken({ required: true });
             const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/auth/me`, 'wyvern');
             if (!response.ok) {
                 throw new Error(`Wyvern auth/me error: ${response.status}`);
@@ -1020,6 +1022,8 @@ function normalizeWyvernLorebookListResponse(data) {
 }
 
 export async function fetchWyvernFollowingCharacters(options = {}) {
+    await ensureFreshWyvernToken({ required: true });
+
     const {
         page = 1,
         limit = 24,
@@ -1070,6 +1074,12 @@ export async function fetchWyvernUserCharacters(options = {}) {
         includePrivate = true,
     } = options;
 
+    const me = await fetchWyvernMe();
+    const userId = textOrEmpty(me?.uid || me?._id || me?.userId || me?.id);
+    if (!userId) {
+        throw new Error('Wyvern my characters error: missing user id');
+    }
+
     const params = new URLSearchParams();
     params.set('page', String(page));
     params.set('limit', String(limit));
@@ -1078,30 +1088,17 @@ export async function fetchWyvernUserCharacters(options = {}) {
     params.set('includeDrafts', includeDrafts ? 'true' : 'false');
     params.set('includePrivate', includePrivate ? 'true' : 'false');
 
-    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/characters/user/me?${params.toString()}`, 'wyvern');
+    const response = await fetchWyvernResponse(`${WYVERN_API_BASE}/user-content/${encodeURIComponent(userId)}/characters?${params.toString()}`, 'wyvern');
     if (!response.ok) {
         throw new Error(`Wyvern my characters error: ${response.status}`);
     }
 
-    const data = await response.json();
-    const characters = Array.isArray(data?.characters)
-        ? data.characters
-        : Array.isArray(data?.items)
-            ? data.items.map((item) => getWyvernFeedCharacterNode(item)).filter((item) => item && item.id)
-            : [];
-
-    const total = Number(data?.total || characters.length || 0) || 0;
-
-    return {
-        characters,
-        total,
-        hasMore: data?.hasMore === true || (page * limit) < total,
-        page: Number(data?.page || page) || page,
-        limit: Number(data?.limit || limit) || limit,
-    };
+    return normalizeWyvernCharacterListResponse(await response.json());
 }
 
 export async function fetchWyvernLikedCharacters(options = {}) {
+    await ensureFreshWyvernToken({ required: true });
+
     const {
         page = 1,
         limit = 24,
@@ -1134,6 +1131,8 @@ export async function fetchWyvernLikedCharacters(options = {}) {
 }
 
 export async function fetchWyvernBookmarkedCharacters(options = {}) {
+    await ensureFreshWyvernToken({ required: true });
+
     const {
         page = 1,
         limit = 24,
@@ -1156,6 +1155,8 @@ export async function fetchWyvernBookmarkedCharacters(options = {}) {
 }
 
 export async function fetchWyvernUserLorebooks(options = {}) {
+    await ensureFreshWyvernToken({ required: true });
+
     const {
         page = 1,
         limit = 24,
@@ -1188,6 +1189,8 @@ export async function fetchWyvernUserLorebooks(options = {}) {
 }
 
 export async function fetchWyvernBookmarkedLorebooks(options = {}) {
+    await ensureFreshWyvernToken({ required: true });
+
     const {
         page = 1,
         limit = 24,

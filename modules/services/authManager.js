@@ -10,12 +10,14 @@ const SAKURA_CLERK_BASE = 'https://clerk.sakura.fm';
 const SAKURA_CLERK_VERSION = '5.66.1';
 const JOYLAND_API_BASE = 'https://api.joyland.ai';
 const WYVERN_FIREBASE_API_KEY = 'AIzaSyCqumrbjUy-EoMpfN4Ev0ppnqjkdpnOTTw';
-const CHARAVAULT_AUTH_PROXY_CHAIN = [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL];
+const CHARAVAULT_AUTH_PROXY_CHAIN = [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_LOL];
 const CRUSHON_PUBLIC_AUTH_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO];
 const CRUSHON_LIKES_HYDRATION_CONCURRENCY = 4;
 const BOT_BROWSER_SETTINGS_KEY = 'botbrowser-settings';
-const SAKURA_TOKEN_REFRESH_LEEWAY_SECONDS = 60;
+const SAKURA_TOKEN_REFRESH_LEEWAY_SECONDS = 5;
+const WYVERN_TOKEN_REFRESH_LEEWAY_SECONDS = 60;
 let sakuraTokenRefreshPromise = null;
+let wyvernTokenRefreshPromise = null;
 
 function parseJsonSafely(text) {
     if (!text) return {};
@@ -122,6 +124,46 @@ function getCurrentSakuraToken() {
     return '';
 }
 
+function getCurrentWyvernToken() {
+    const authHeaderMap = getAuthHeadersForService('wyvern');
+    const headerValue = String(authHeaderMap?.Authorization || authHeaderMap?.authorization || '').trim();
+    const headerToken = headerValue.replace(/^Bearer\s+/i, '').trim();
+    if (headerToken) return headerToken;
+
+    const stateToken = String(authState?.wyvern?.token || '').trim();
+    if (stateToken) return stateToken;
+
+    const settingsToken = String(getBotBrowserSettingsSnapshot()?.wyvernToken || '').trim();
+    if (settingsToken) return settingsToken;
+
+    return '';
+}
+
+function getCurrentWyvernRefreshToken() {
+    const stateRefresh = String(authState?.wyvern?.refreshToken || '').trim();
+    if (stateRefresh) return stateRefresh;
+
+    const settingsRefresh = String(getBotBrowserSettingsSnapshot()?.wyvernRefreshToken || '').trim();
+    if (settingsRefresh) return settingsRefresh;
+
+    return '';
+}
+
+function getCurrentPygmalionToken() {
+    const authHeaderMap = getAuthHeadersForService('pygmalion');
+    const headerValue = String(authHeaderMap?.Authorization || authHeaderMap?.authorization || '').trim();
+    const headerToken = headerValue.replace(/^Bearer\s+/i, '').trim();
+    if (headerToken) return headerToken;
+
+    const stateToken = String(authState?.pygmalion?.token || '').trim();
+    if (stateToken) return stateToken;
+
+    const settingsToken = String(getBotBrowserSettingsSnapshot()?.pygmalionToken || '').trim();
+    if (settingsToken) return settingsToken;
+
+    return '';
+}
+
 function applySakuraToken(token, displayName = null) {
     const normalizedToken = String(token || '').trim();
     const normalizedDisplayName = String(displayName || '').trim();
@@ -136,6 +178,51 @@ function applySakuraToken(token, displayName = null) {
             sakuraToken: normalizedToken,
             ...(normalizedDisplayName ? { sakuraDisplayName: normalizedDisplayName } : {}),
         });
+    }
+}
+
+function applyWyvernToken(token, extra = {}) {
+    const normalizedToken = String(token || '').trim();
+    const normalizedRefreshToken = String(extra.refreshToken || '').trim();
+    const normalizedUserId = String(extra.userId || '').trim();
+    const normalizedDisplayName = String(extra.displayName || '').trim();
+
+    authState.wyvern.token = normalizedToken || null;
+    authState.wyvern.refreshToken = normalizedRefreshToken || authState.wyvern.refreshToken || null;
+    authState.wyvern.userId = normalizedUserId || authState.wyvern.userId || null;
+    authState.wyvern.displayName = normalizedDisplayName || authState.wyvern.displayName || null;
+
+    const wyvernHeaders = normalizedToken ? { Authorization: `Bearer ${normalizedToken}` } : null;
+    setServiceAuthHeader('wyvern', wyvernHeaders);
+    setServiceAuthHeader('wyvern_trending', wyvernHeaders);
+    setServiceAuthHeader('wyvern_lorebooks', wyvernHeaders);
+
+    const patch = {};
+    if (normalizedToken) patch.wyvernToken = normalizedToken;
+    if (normalizedRefreshToken) patch.wyvernRefreshToken = normalizedRefreshToken;
+    if (normalizedUserId) patch.wyvernUserId = normalizedUserId;
+    if (normalizedDisplayName) patch.wyvernDisplayName = normalizedDisplayName;
+    if (Object.keys(patch).length > 0) {
+        writeBotBrowserSettingsPatch(patch);
+    }
+}
+
+function applyPygmalionToken(token, extra = {}) {
+    const normalizedToken = String(token || '').trim();
+    const normalizedDisplayName = String(extra.displayName || '').trim();
+
+    authState.pygmalion.token = normalizedToken || null;
+    authState.pygmalion.displayName = normalizedDisplayName || authState.pygmalion.displayName || null;
+
+    const pygHeaders = normalizedToken ? { Authorization: `Bearer ${normalizedToken}` } : null;
+    setServiceAuthHeader('pygmalion', pygHeaders);
+    setServiceAuthHeader('pygmalion_trending', pygHeaders);
+
+    const patch = {};
+    if (normalizedToken) patch.pygmalionToken = normalizedToken;
+    if (normalizedDisplayName) patch.pygmalionDisplayName = normalizedDisplayName;
+    if (Object.keys(patch).length > 0) {
+        writeBotBrowserSettingsPatch(patch);
     }
 }
 
@@ -187,11 +274,147 @@ export async function ensureFreshSakuraToken(options = {}) {
     return sakuraTokenRefreshPromise;
 }
 
+async function refreshWyvernToken(refreshToken) {
+    const body = new URLSearchParams();
+    body.set('grant_type', 'refresh_token');
+    body.set('refresh_token', String(refreshToken || '').trim());
+
+    const response = await fetch(`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(WYVERN_FIREBASE_API_KEY)}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
+        },
+        body: body.toString(),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    const token = String(data?.id_token || data?.idToken || '').trim();
+    if (!response.ok || !token) {
+        throw new Error(getErrorMessage(data, `Wyvern token refresh failed (${response.status})`));
+    }
+
+    return {
+        token,
+        refreshToken: String(data?.refresh_token || data?.refreshToken || refreshToken || '').trim(),
+        userId: String(data?.user_id || data?.userId || '').trim(),
+    };
+}
+
+export async function ensureFreshWyvernToken(options = {}) {
+    const {
+        required = false,
+        forceRefresh = false,
+    } = options;
+
+    const currentToken = getCurrentWyvernToken();
+    const currentRefreshToken = getCurrentWyvernRefreshToken();
+    const currentPayload = decodeJwtPayload(currentToken);
+    const isCurrentExpired = isJwtExpiredOrNearExpiry(currentToken, 0);
+
+    if (currentToken && !forceRefresh && !isJwtExpiredOrNearExpiry(currentToken, WYVERN_TOKEN_REFRESH_LEEWAY_SECONDS)) {
+        return currentToken;
+    }
+
+    if (wyvernTokenRefreshPromise) {
+        return wyvernTokenRefreshPromise;
+    }
+
+    wyvernTokenRefreshPromise = (async () => {
+        try {
+            if (currentRefreshToken) {
+                const refreshed = await refreshWyvernToken(currentRefreshToken);
+                applyWyvernToken(refreshed.token, {
+                    refreshToken: refreshed.refreshToken || currentRefreshToken,
+                    userId: refreshed.userId || getBotBrowserSettingsSnapshot()?.wyvernUserId || '',
+                    displayName: getBotBrowserSettingsSnapshot()?.wyvernDisplayName || currentPayload?.name || '',
+                });
+                return refreshed.token;
+            }
+        } catch {
+            // Fall back to the stored token or throw below when auth is required.
+        } finally {
+            wyvernTokenRefreshPromise = null;
+        }
+
+        if (required) {
+            if (currentToken && isCurrentExpired) {
+                throw new Error('Wyvern token expired. Reconnect Wyvern in Settings or sign in again to refresh the token.');
+            }
+            if (!currentToken) {
+                throw new Error('Wyvern login required. Connect Wyvern in Settings before retrying.');
+            }
+        }
+
+        return currentToken;
+    })();
+
+    return wyvernTokenRefreshPromise;
+}
+
+export function assertFreshPygmalionToken(options = {}) {
+    const {
+        required = false,
+    } = options;
+
+    const currentToken = getCurrentPygmalionToken();
+    if (!currentToken) {
+        if (required) {
+            throw new Error('Pygmalion login required. Connect Pygmalion in Settings before retrying.');
+        }
+        return '';
+    }
+
+    if (isJwtExpiredOrNearExpiry(currentToken, 60)) {
+        throw new Error('Pygmalion token expired. Reconnect Pygmalion in Settings or paste a fresh authn token from pygmalion.chat before retrying.');
+    }
+
+    return currentToken;
+}
+
 function extractCharavaultToken(rawValue) {
     const normalized = String(rawValue || '').trim();
     if (!normalized) return '';
-    const cookieMatch = normalized.match(/(?:^|;\s*)charavault_token=([^;]+)/i);
-    return decodeURIComponent((cookieMatch?.[1] || normalized).trim());
+    const withoutBearer = normalized.replace(/^Bearer\s+/i, '').trim();
+    const cookieMatch = withoutBearer.match(/(?:^|;\s*)charavault_token=([^;]+)/i);
+    const candidate = decodeURIComponent((cookieMatch?.[1] || withoutBearer).trim());
+
+    if (!candidate) return '';
+
+    if (candidate.startsWith('{')) {
+        try {
+            const parsed = JSON.parse(candidate);
+            const nestedToken =
+                parsed?.token
+                || parsed?.access_token
+                || parsed?.accessToken
+                || parsed?.jwt
+                || parsed?.id_token
+                || parsed?.result?.token
+                || parsed?.result?.access_token
+                || parsed?.result?.accessToken
+                || parsed?.result?.jwt
+                || parsed?.result?.id_token;
+            if (nestedToken) {
+                return String(nestedToken).trim();
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    if (candidate.startsWith('"') && candidate.endsWith('"')) {
+        try {
+            const parsed = JSON.parse(candidate);
+            if (typeof parsed === 'string') {
+                return parsed.trim();
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    return candidate;
 }
 
 function buildCrushonCookieHeader(rawValue) {
@@ -368,6 +591,8 @@ export const authState = {
     harpy:    { token: null, userId: null, displayName: null },
     charavault: { cookie: null, displayName: null },
     sakura:   { token: null, userId: null, displayName: null },
+    wyvern:   { token: null, refreshToken: null, userId: null, displayName: null },
+    pygmalion: { token: null, userId: null, displayName: null },
     crushon:  { cookie: null, userId: null, displayName: null },
 };
 
@@ -394,6 +619,8 @@ export function isLoggedIn(service) {
         case 'harpy':      return !!authState.harpy.token;
         case 'charavault': return !!authState.charavault.cookie;
         case 'sakura':     return !!authState.sakura.token;
+        case 'wyvern':     return !!authState.wyvern.token;
+        case 'pygmalion':  return !!authState.pygmalion.token;
         case 'crushon':    return !!authState.crushon.cookie;
         default:           return false;
     }
@@ -443,6 +670,20 @@ export function initAuthFromSettings(settings, harpySetTokenFn) {
         setServiceAuthHeader('sakura_personal', { Authorization: `Bearer ${settings.sakuraToken}` });
     }
 
+    if (settings.wyvernToken) {
+        applyWyvernToken(settings.wyvernToken, {
+            refreshToken: settings.wyvernRefreshToken || '',
+            userId: settings.wyvernUserId || '',
+            displayName: settings.wyvernDisplayName || '',
+        });
+    }
+
+    if (settings.pygmalionToken) {
+        applyPygmalionToken(settings.pygmalionToken, {
+            displayName: settings.pygmalionDisplayName || '',
+        });
+    }
+
     if (settings.crushonCookie) {
         authState.crushon.cookie = settings.crushonCookie;
         authState.crushon.displayName = settings.crushonDisplayName || null;
@@ -487,6 +728,12 @@ export function applyServiceLogin(service, tokenOrCookie, extra = {}) {
             setServiceAuthHeader('sakura', tokenOrCookie ? { Authorization: `Bearer ${tokenOrCookie}` } : null);
             setServiceAuthHeader('sakura_personal', tokenOrCookie ? { Authorization: `Bearer ${tokenOrCookie}` } : null);
             break;
+        case 'wyvern':
+            applyWyvernToken(tokenOrCookie, extra);
+            break;
+        case 'pygmalion':
+            applyPygmalionToken(tokenOrCookie, extra);
+            break;
         case 'crushon':
             authState.crushon.cookie = tokenOrCookie;
             authState.crushon.displayName = extra.displayName || null;
@@ -523,6 +770,16 @@ export function clearServiceAuth(service, settings) {
         case 'sakura':
             settings.sakuraToken = '';
             settings.sakuraDisplayName = '';
+            break;
+        case 'wyvern':
+            settings.wyvernToken = '';
+            settings.wyvernRefreshToken = '';
+            settings.wyvernUserId = '';
+            settings.wyvernDisplayName = '';
+            break;
+        case 'pygmalion':
+            settings.pygmalionToken = '';
+            settings.pygmalionDisplayName = '';
             break;
         case 'crushon':
             settings.crushonCookie = '';
@@ -804,11 +1061,68 @@ export async function loginWyvern(email, password) {
     };
 }
 
+export async function loginCharaVault(email, password) {
+    const identity = String(email || '').trim();
+    const secret = String(password || '');
+
+    if (!identity || !secret) {
+        throw new Error('Email and password are required.');
+    }
+
+    let response;
+    try {
+        response = await proxiedFetch('https://charavault.net/api/auth/login', {
+            service: 'charavault',
+            proxyChain: [PROXY_TYPES.PLUGIN],
+            fetchOptions: {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                },
+                body: JSON.stringify({
+                    email: identity,
+                    password: secret,
+                }),
+            },
+        });
+    } catch {
+        throw new Error('CharaVault direct login requires the BotBrowser plugin because charavault.net blocks cross-origin browser login requests. Install the plugin or paste a CharaVault token manually.');
+    }
+
+    const data = await response.json().catch(() => ({}));
+    if (data?.requires_2fa) {
+        throw new Error('CharaVault direct login does not support 2FA yet. Sign in on charavault.net and paste the returned token manually.');
+    }
+
+    const token = extractCharavaultToken(
+        data?.token
+        || data?.access_token
+        || data?.accessToken
+        || data?.jwt
+        || data?.id_token
+        || ''
+    );
+
+    if (!response.ok || !token) {
+        throw new Error(getErrorMessage(data, `CharaVault login failed (${response.status})`));
+    }
+
+    return {
+        token,
+        displayName: data?.user?.display_name || data?.user?.email || identity,
+        handle: data?.user?.display_name || identity,
+        identifier: identity,
+        userId: data?.user?.id ? String(data.user.id) : null,
+        isVerified: Boolean(data?.user?.email_verified),
+    };
+}
+
 // ─── Token / Cookie verification ──────────────────────────────────────────────
 
 /**
  * Verify a CharaVault auth value by calling /api/auth/me.
- * Accepts either the raw charavault_token value or a full cookie string.
+ * Accepts a raw token, a full charavault_token cookie string, or a pasted login JSON response.
  */
 export async function verifyCharaVaultCookie(cookieStr) {
     const token = extractCharavaultToken(cookieStr);

@@ -5,10 +5,16 @@ const JANNY_API_BASE = 'https://jannyai.com/api';
 const JANNY_FALLBACK_TOKEN = '88a6463b66e04fb07ba87ee3db06af337f492ce511d93df6e2d2968cb2ff2b30';
 export const JANNY_IMAGE_BASE = 'https://image.jannyai.com/bot-avatars/';
 const DEBUG = typeof window !== 'undefined' && window.__BOT_BROWSER_DEBUG === true;
-const JANNY_PUBLIC_PROXY_CHAIN = [
+const JANNY_PROXY_CHAIN = [
+    PROXY_TYPES.PLUGIN,
     PROXY_TYPES.CORS_EU_ORG,
     PROXY_TYPES.CORSPROXY_IO,
+    PROXY_TYPES.CORS_LOL,
     PROXY_TYPES.PUTER,
+];
+const JANNY_SEARCH_PROXY_CHAIN = [
+    PROXY_TYPES.NONE,
+    ...JANNY_PROXY_CHAIN,
 ];
 
 // Cached token state
@@ -18,10 +24,10 @@ const jannyCharacterDetailsCache = new Map();
 const jannyCreatorProfileCache = new Map();
 const jannyCharacterUrlCache = new Map();
 
-async function fetchJannyViaPublicChain(url, accept = 'text/plain, */*') {
+async function fetchJannyViaProxyChain(url, accept = 'text/plain, */*') {
     const errors = [];
 
-    for (const proxyType of JANNY_PUBLIC_PROXY_CHAIN) {
+    for (const proxyType of JANNY_PROXY_CHAIN) {
         try {
             const response = await proxiedFetch(url, {
                 service: 'jannyai',
@@ -62,12 +68,12 @@ async function fetchJannyViaPublicChain(url, accept = 'text/plain, */*') {
 }
 
 async function fetchJannyHtml(url) {
-    const { response } = await fetchJannyViaPublicChain(url, 'text/html');
+    const { response } = await fetchJannyViaProxyChain(url, 'text/html');
     return response;
 }
 
 async function fetchJannyText(url, accept = 'text/plain, */*') {
-    const { text } = await fetchJannyViaPublicChain(url, accept);
+    const { text } = await fetchJannyViaProxyChain(url, accept);
     return text;
 }
 
@@ -312,7 +318,7 @@ export async function getJannyCharactersByIds(ids = []) {
         const url = `${JANNY_API_BASE}/get-characters?ids=${encodeURIComponent(chunk.join(','))}`;
         const response = await proxiedFetch(url, {
             service: 'jannyai',
-            proxyChain: JANNY_PUBLIC_PROXY_CHAIN,
+            proxyChain: JANNY_PROXY_CHAIN,
             fetchOptions: {
                 headers: {
                     'Accept': 'application/json',
@@ -665,25 +671,28 @@ export async function searchJannyCharacters(options = {}) {
     const userHeaders = getAuthHeadersForService('jannyai');
     const headers = { ...userHeaders, ...baseHeaders };
 
-    let response;
-    try {
-        response = await fetch(JANNY_SEARCH_URL, {
+    // JannyAI search is much more stable through the local plugin. If the plugin
+    // is unavailable, fall back to relays and explicitly allow the public search
+    // token/header set through because MeiliSearch rejects header-less requests.
+    const response = await proxiedFetch(JANNY_SEARCH_URL, {
+        service: 'jannyai',
+        // The Meili endpoint is CORS-open in the real standalone/ST iframe runtime.
+        // Try direct fetch first so the source does not stall behind unnecessary proxy hops.
+        proxyChain: JANNY_SEARCH_PROXY_CHAIN,
+        allowPublicAuth: true,
+        publicAuthHeaders: {
+            'Authorization': headers.Authorization,
+            'Origin': headers.Origin,
+            'Referer': headers.Referer,
+            'x-meilisearch-client': headers['x-meilisearch-client'],
+        },
+        timeoutMs: 10000,
+        fetchOptions: {
             method: 'POST',
             headers,
             body: JSON.stringify(requestBody)
-        });
-    } catch (e) {
-        // Some environments block direct cross-site fetches; fall back to proxy chain.
-        response = await proxiedFetch(JANNY_SEARCH_URL, {
-            service: 'jannyai',
-            proxyChain: JANNY_PUBLIC_PROXY_CHAIN,
-            fetchOptions: {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(requestBody)
-            }
-        });
-    }
+        }
+    });
 
     if (!response.ok) {
         const errorText = await response.text().catch(() => '');

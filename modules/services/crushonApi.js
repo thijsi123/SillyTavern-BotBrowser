@@ -6,10 +6,10 @@ import { PROXY_TYPES, getAuthHeadersForService, getProxyChainForService, proxied
 const BASE = 'https://crushon.ai/api/trpc';
 const CRUSHON_CREATOR_PROXY_CHAIN = [
     PROXY_TYPES.PLUGIN,
-    PROXY_TYPES.PUTER,
     PROXY_TYPES.CORS_EU_ORG,
     PROXY_TYPES.CORSPROXY_IO,
     PROXY_TYPES.CORS_LOL,
+    PROXY_TYPES.PUTER,
 ];
 const CRUSHON_PUBLIC_AUTH_PROXY_CHAIN = [PROXY_TYPES.CORSPROXY_IO];
 const CRUSHON_PUBLIC_PROXY_TYPES = new Set([
@@ -645,15 +645,44 @@ export async function searchCrushonUsers(options = {}) {
  * Get full character detail
  */
 export async function getCrushonCharacter(characterId, locale = 'en') {
+    const characterInput = {
+        characterId,
+        displayPosition: 0,
+        locale,
+    };
+    const characterImagesInput = {
+        characterId,
+    };
+    const authCookieAvailable = !!getCrushonFullCookieHeader();
+
+    const fetchCharacter = async () => {
+        if (authCookieAvailable) {
+            try {
+                return await fetchTrpcViaCrushonAuthRelay('character.getCharacter', characterInput);
+            } catch {
+                // Fall through to the public path if the auth relay is unavailable.
+            }
+        }
+
+        return fetchTrpc('character.getCharacter', characterInput);
+    };
+
+    const fetchCharacterImages = async () => {
+        if (authCookieAvailable) {
+            try {
+                return await fetchTrpcViaCrushonAuthRelay('characterImage.getCharacterImagesWithMask', characterImagesInput);
+            } catch {
+                // Fall through to the public path if the auth relay is unavailable.
+            }
+        }
+
+        return fetchTrpc('characterImage.getCharacterImagesWithMask', characterImagesInput)
+            .catch(() => null);
+    };
+
     const [result, albumPayload] = await Promise.all([
-        fetchTrpc('character.getCharacter', {
-            characterId,
-            displayPosition: 0,
-            locale
-        }),
-        fetchTrpc('characterImage.getCharacterImagesWithMask', {
-            characterId,
-        }).catch(() => null),
+        fetchCharacter(),
+        fetchCharacterImages(),
     ]);
 
     return {
@@ -663,7 +692,15 @@ export async function getCrushonCharacter(characterId, locale = 'en') {
 }
 
 export async function getCrushonCharacterImages(characterId) {
-    return fetchTrpc('characterImage.getCharacterImagesWithMask', { characterId });
+    const input = { characterId };
+    if (getCrushonFullCookieHeader()) {
+        try {
+            return await fetchTrpcViaCrushonAuthRelay('characterImage.getCharacterImagesWithMask', input);
+        } catch {
+            // Fall back to the public path when auth-specific routes are unavailable.
+        }
+    }
+    return fetchTrpc('characterImage.getCharacterImagesWithMask', input);
 }
 
 /**

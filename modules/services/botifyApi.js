@@ -89,6 +89,7 @@ export async function searchBotify(options = {}) {
 
     const response = await proxiedFetch(url, {
         service: 'botify',
+        timeoutMs: 10000,
         fetchOptions: {
             method: 'GET',
             headers: { 'Accept': 'application/json' },
@@ -120,6 +121,7 @@ export async function getBotifyBot(id) {
 
     const response = await proxiedFetch(url, {
         service: 'botify',
+        timeoutMs: 10000,
         fetchOptions: {
             method: 'GET',
             headers: { 'Accept': 'application/json' },
@@ -137,6 +139,10 @@ export async function getBotifyBot(id) {
 export function transformBotifyCard(bot) {
     const a = bot.attributes || {};
     const tags = (a.tags?.data || []).map(t => t.attributes?.name || t.name).filter(Boolean);
+    const description = a.description || a.bio || '';
+    const greeting = a.greeting || '';
+    const personality = a.personaDescription || a.appearance || '';
+    const systemPrompt = a.instruction || '';
 
     return {
         id: String(bot.id),
@@ -145,9 +151,14 @@ export function transformBotifyCard(bot) {
         avatar_url: a.avatarUrl || '',
         image_url: `https://botify.ai/bot_${bot.id}/chat`,
         tags: tags,
-        description: a.bio || a.description || '',
-        desc_preview: (a.bio || a.description || '').substring(0, 150),
-        desc_search: `${a.name || ''} ${a.bio || ''} ${a.description || ''}`.substring(0, 500),
+        description,
+        desc_preview: (a.bio || description || '').substring(0, 150),
+        desc_search: `${a.name || ''} ${a.bio || ''} ${description} ${personality} ${systemPrompt} ${greeting}`.substring(0, 700),
+        first_mes: greeting,
+        first_message: greeting,
+        personality,
+        system_prompt: systemPrompt,
+        creator_notes: a.bio && a.bio !== description ? a.bio : '',
         created_at: a.createdAt,
         updated_at: a.updatedAt || '',
         possibleNsfw: a.isSexual || false,

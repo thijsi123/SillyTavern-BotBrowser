@@ -127,6 +127,31 @@ export async function getChubCharacter(fullPath) {
     return data;
 }
 
+function parseChubJsonLabel(labels, title) {
+    if (!Array.isArray(labels)) return {};
+
+    const normalizedTitle = String(title || '').trim().toUpperCase();
+    const match = labels.find((label) => String(label?.title || '').trim().toUpperCase() === normalizedTitle);
+    if (!match) return {};
+
+    try {
+        const parsed = JSON.parse(String(match.description || '{}'));
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function parseChubFieldTokenCounts(node) {
+    return parseChubJsonLabel(node?.labels, 'TOKEN_COUNTS');
+}
+
+function hasChubTopic(node, topicName) {
+    const needle = String(topicName || '').trim().toLowerCase();
+    if (!needle) return false;
+    return (node?.topics || []).some((topic) => String(topic || '').trim().toLowerCase() === needle);
+}
+
 /**
  * Transform Chub API search result node to BotBrowser card format
  * @param {Object} node - Chub API node object
@@ -135,6 +160,10 @@ export async function getChubCharacter(fullPath) {
 export function transformChubCard(node) {
     const fullPath = node.fullPath || `${node.name}`;
     const creator = fullPath.includes('/') ? fullPath.split('/')[0] : 'Unknown';
+    const fieldTokenCounts = parseChubFieldTokenCounts(node);
+    const firstMessageTokenCount = Number(fieldTokenCounts.first_mes || fieldTokenCounts.first_message || 0) || 0;
+    const exampleTokenCount = Number(fieldTokenCounts.mes_example || fieldTokenCounts.example_dialogs || 0) || 0;
+    const hasAlternateGreetings = hasChubTopic(node, 'multiple greetings');
 
     // Check for NSFW - API uses nsfw_image field, also check topics for "NSFW" tag
     const hasNsfwTag = (node.topics || []).some(t => t.toLowerCase() === 'nsfw');
@@ -151,6 +180,7 @@ export function transformChubCard(node) {
         tags: node.topics || [],
         // tagline = website/page description (shown on Chub with images) - for Overview tab
         tagline: node.tagline || '',
+        website_description: node.description || '',
         // desc_preview = short preview for card display
         desc_preview: node.tagline || '',
         desc_search: (node.tagline || '') + ' ' + (node.description || ''),
@@ -170,7 +200,14 @@ export function transformChubCard(node) {
         nMessages: node.nMessages || 0,
         nChats: node.nChats || 0,
         forksCount: node.forks_count || 0,
-        chubNodeId: node.id || null
+        chubNodeId: node.id || null,
+        field_token_counts: fieldTokenCounts,
+        first_mes_token_count: firstMessageTokenCount,
+        mes_example_token_count: exampleTokenCount,
+        has_first_message: firstMessageTokenCount > 0,
+        has_examples: exampleTokenCount > 0,
+        has_alternate_greetings: hasAlternateGreetings,
+        definition_preview_only: true,
     };
 }
 

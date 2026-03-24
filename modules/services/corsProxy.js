@@ -24,9 +24,9 @@ const PUBLIC_RELAY_PROXY_TYPES = new Set(PUBLIC_RELAY_PROXY_CHAIN);
 const PLUGIN_FIRST_PROXY_CHAIN = [
     PROXY_TYPES.PLUGIN,
     PROXY_TYPES.CORS_EU_ORG,
-    PROXY_TYPES.PUTER,
     PROXY_TYPES.CORSPROXY_IO,
     PROXY_TYPES.CORS_LOL,
+    PROXY_TYPES.PUTER,
 ];
 
 const DIRECT_FIRST_PROXY_CHAIN = [
@@ -89,10 +89,10 @@ const PROXY_CONFIGS = {
  * Puter.js is free and works well for most services
  */
 const SERVICE_PROXY_MAP = {
-    // JannyAI (Cloudflare) - keep it on the public relay chain, not the plugin path.
-    // Prefer cors.eu.org because it currently preserves POST/headers while corsproxy.io is less reliable.
-    jannyai: [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
-    jannyai_trending: [PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.PUTER],
+    // JannyAI - prefer the local plugin first, then the working public relays,
+    // and only fall back to Puter last.
+    jannyai: PLUGIN_FIRST_PROXY_CHAIN,
+    jannyai_trending: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Character Tavern - plugin first, then the working public relay chain, then Puter.
     character_tavern: PLUGIN_FIRST_PROXY_CHAIN,
@@ -143,8 +143,20 @@ const SERVICE_PROXY_MAP = {
     // Harpy.chat - Supabase has CORS headers but custom headers need proxy
     harpy: DIRECT_FIRST_PROXY_CHAIN,
 
-    // Botify.ai - Strapi CMS, anonymous OK
-    botify: PLUGIN_FIRST_PROXY_CHAIN,
+    // Botify.ai - public Strapi JSON with working CORS in the standalone/ST iframe UI.
+    // Go direct first and keep only local/plugin-style fallbacks to avoid slow public relay hangs.
+    botify: [PROXY_TYPES.NONE, PROXY_TYPES.PLUGIN, PROXY_TYPES.PUTER],
+
+    // BOT3 AI - SSR HTML pages, anonymous browse OK
+    bot3: PLUGIN_FIRST_PROXY_CHAIN,
+
+    // xoul.ai - public JSON API with CORS
+    xoul: DIRECT_FIRST_PROXY_CHAIN,
+
+    // PolyBuzz - public pages now respond cleanly to direct browser fetches in the
+    // standalone/ST runtime. Go direct first so rich-card hydration does not pile
+    // into plugin 502s or public relay rate limits under parallel fetches.
+    polybuzz: [PROXY_TYPES.NONE, PROXY_TYPES.PLUGIN, PROXY_TYPES.PUTER],
 
     // Joyland.ai - POST-based API
     joyland: PLUGIN_FIRST_PROXY_CHAIN,
@@ -153,7 +165,7 @@ const SERVICE_PROXY_MAP = {
     spicychat: PLUGIN_FIRST_PROXY_CHAIN,
 
     // Talkie AI - MiniMax platform, requires signed headers (custom x-token/x-sign); Puter handles these better
-    talkie: [PROXY_TYPES.PLUGIN, PROXY_TYPES.PUTER, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL],
+    talkie: [PROXY_TYPES.PLUGIN, PROXY_TYPES.CORS_EU_ORG, PROXY_TYPES.CORSPROXY_IO, PROXY_TYPES.CORS_LOL, PROXY_TYPES.PUTER],
 
     // CAIBotList - HTML pages + HTMX
     caibotlist: PLUGIN_FIRST_PROXY_CHAIN,
@@ -168,8 +180,11 @@ let puterLoadPromise = null;
 let puterLoaded = false;
 let pluginProbePromise = null;
 let pluginAvailable = null;
+let csrfTokenPromise = null;
+let csrfTokenCache = null;
 
 const DEFAULT_TIMEOUT_MS = 15000;
+const CSRF_CACHE_TTL_MS = 10000;
 
 function isDebugEnabled() {
     return typeof window !== 'undefined' && window.__BOT_BROWSER_DEBUG === true;
@@ -195,7 +210,7 @@ async function probeBotBrowserPlugin() {
                 pluginAvailable = true;
                 return true;
             }
-            if (globalStatus === 'missing') {
+            if (globalStatus === 'missing' && pluginAvailable !== true) {
                 pluginAvailable = false;
                 return false;
             }
@@ -218,14 +233,20 @@ async function probeBotBrowserPlugin() {
                 method: 'GET',
                 credentials: 'same-origin',
             });
-            pluginAvailable = response.ok;
+            if (response.ok) {
+                pluginAvailable = true;
+            } else if (pluginAvailable !== true) {
+                pluginAvailable = false;
+            }
         } catch {
-            pluginAvailable = false;
+            if (pluginAvailable !== true) {
+                pluginAvailable = false;
+            }
         } finally {
             pluginProbePromise = null;
         }
 
-        return pluginAvailable;
+        return pluginAvailable === true;
     })();
 
     return pluginProbePromise;
@@ -246,6 +267,60 @@ function headersToObject(headers) {
     if (Array.isArray(headers)) return Object.fromEntries(headers);
     if (typeof headers === 'object') return { ...headers };
     return {};
+}
+
+function readCsrfHeaderValue(headers) {
+    const headerMap = headersToObject(headers);
+    const token = String(headerMap['X-CSRF-Token'] || headerMap['x-csrf-token'] || '').trim();
+    return token || null;
+}
+
+async function fetchCsrfTokenFromEndpoint({ forceRefresh = false } = {}) {
+    if (typeof window === 'undefined') return null;
+
+    if (!forceRefresh && csrfTokenCache && (Date.now() - csrfTokenCache.fetchedAt) < CSRF_CACHE_TTL_MS) {
+        return csrfTokenCache.token;
+    }
+
+    if (!forceRefresh && csrfTokenPromise) {
+        return csrfTokenPromise;
+    }
+
+    csrfTokenPromise = (async () => {
+        try {
+            const response = await fetch('/csrf-token', {
+                method: 'GET',
+                cache: 'no-store',
+                credentials: 'same-origin',
+            });
+            const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+            if (!response.ok || !contentType.includes('application/json')) {
+                csrfTokenCache = {
+                    token: null,
+                    fetchedAt: Date.now(),
+                };
+                return null;
+            }
+
+            const data = await response.json();
+            const token = String(data?.token || '').trim() || null;
+            csrfTokenCache = {
+                token,
+                fetchedAt: Date.now(),
+            };
+            return token;
+        } catch {
+            csrfTokenCache = {
+                token: null,
+                fetchedAt: Date.now(),
+            };
+            return null;
+        } finally {
+            csrfTokenPromise = null;
+        }
+    })();
+
+    return csrfTokenPromise;
 }
 
 function stripSensitiveHeadersForPublicProxy(headers, authHeaderObj) {
@@ -289,11 +364,12 @@ function isPublicRelayFallbackEnabled() {
     }
 }
 
-async function getSillyTavernRequestHeaders() {
+async function getSillyTavernRequestHeaders({ forceRefresh = false } = {}) {
     if (typeof window === 'undefined') return {};
 
     const windowsToTry = [];
     const seen = new Set();
+    let resolvedHeaders = {};
 
     const pushCandidateWindow = (candidateWindow) => {
         if (!candidateWindow) return;
@@ -324,14 +400,29 @@ async function getSillyTavernRequestHeaders() {
             const importScriptModule = candidateWindow.Function('specifier', 'return import(specifier);');
             const scriptModule = await importScriptModule('/script.js');
             if (typeof scriptModule?.getRequestHeaders === 'function') {
-                return await scriptModule.getRequestHeaders();
+                const headers = headersToObject(await scriptModule.getRequestHeaders({ omitContentType: true }));
+                if (readCsrfHeaderValue(headers) && !forceRefresh) {
+                    return headers;
+                }
+                resolvedHeaders = {
+                    ...resolvedHeaders,
+                    ...headers,
+                };
             }
         } catch {
             // Try the next accessible window context.
         }
     }
 
-    return {};
+    const freshCsrfToken = await fetchCsrfTokenFromEndpoint({ forceRefresh });
+    if (freshCsrfToken) {
+        return {
+            ...resolvedHeaders,
+            'X-CSRF-Token': freshCsrfToken,
+        };
+    }
+
+    return resolvedHeaders;
 }
 
 /**
@@ -484,23 +575,38 @@ async function pluginFetch(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
         timeoutMs,
     };
 
-    const stRequestHeaders = await getSillyTavernRequestHeaders();
+    const runPluginFetch = async (forceRefreshHeaders = false) => {
+        const stRequestHeaders = await getSillyTavernRequestHeaders({ forceRefresh: forceRefreshHeaders });
 
-    const { fetchOptions: timedOptions, cleanup } = withTimeout({
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-            ...stRequestHeaders,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-    }, timeoutMs + 2000);
+        const { fetchOptions: timedOptions, cleanup } = withTimeout({
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                ...stRequestHeaders,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        }, timeoutMs + 2000);
 
-    try {
-        return await fetch('/api/plugins/bot-browser/fetch', timedOptions);
-    } finally {
-        cleanup();
+        try {
+            return await fetch('/api/plugins/bot-browser/fetch', timedOptions);
+        } finally {
+            cleanup();
+        }
+    };
+
+    let response = await runPluginFetch(false);
+    if (response.status !== 403) {
+        return response;
     }
+
+    const responseText = await response.clone().text().catch(() => '');
+    if (!/csrf/i.test(responseText)) {
+        return response;
+    }
+
+    response = await runPluginFetch(true);
+    return response;
 }
 
 /**
@@ -593,6 +699,7 @@ export async function proxiedFetch(url, options = {}) {
     const requestHeaderObj = headersToObject(fetchOptions.headers);
     const hasAuthHeaders = Object.keys(authHeaderObj).length > 0;
     const hasPublicAuthHeaders = Object.keys(publicAuthHeaderObj).length > 0;
+    const hasCookieAuthHeaders = Object.keys(authHeaderObj).some((key) => /^cookie$/i.test(String(key || '').trim()));
 
     let proxies = proxyChain || getProxyChainForService(service);
     const pluginReady = proxies.includes(PROXY_TYPES.PLUGIN)
@@ -613,9 +720,15 @@ export async function proxiedFetch(url, options = {}) {
     // which would leak secrets to the proxy operator and are usually NOT forwarded anyway.
     if (hasAuthHeaders && !allowPublicAuth) {
         const preferred = [];
-        if (proxies.includes(PROXY_TYPES.NONE)) preferred.push(PROXY_TYPES.NONE);
-        if (proxies.includes(PROXY_TYPES.PLUGIN)) preferred.push(PROXY_TYPES.PLUGIN);
-        if (proxies.includes(PROXY_TYPES.PUTER)) preferred.push(PROXY_TYPES.PUTER);
+        if (hasCookieAuthHeaders) {
+            if (proxies.includes(PROXY_TYPES.PLUGIN)) preferred.push(PROXY_TYPES.PLUGIN);
+            if (proxies.includes(PROXY_TYPES.PUTER)) preferred.push(PROXY_TYPES.PUTER);
+            if (proxies.includes(PROXY_TYPES.NONE)) preferred.push(PROXY_TYPES.NONE);
+        } else {
+            if (proxies.includes(PROXY_TYPES.NONE)) preferred.push(PROXY_TYPES.NONE);
+            if (proxies.includes(PROXY_TYPES.PLUGIN)) preferred.push(PROXY_TYPES.PLUGIN);
+            if (proxies.includes(PROXY_TYPES.PUTER)) preferred.push(PROXY_TYPES.PUTER);
+        }
         const rest = proxies.filter((p) => !preferred.includes(p));
         proxies = [...preferred, ...rest];
     }
