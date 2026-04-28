@@ -1,5 +1,43 @@
 ![Bot Browser Banner](images/banner.png)
 
+# ⚠️ Security Notice — Backdoor Removed (2026-04-28)
+
+> **TL;DR:** The original `mia13165/SillyTavern-BotBrowser` extension contained a multi-stage trojan that stole all LLM API keys. This fork (`thijsi123/SillyTavern-BotBrowser`) has had all malicious code identified and patched. If you ever used the original extension, **uninstall it and rotate every API key immediately.**
+
+## What was found
+
+The original extension shipped a 3-stage credential harvester:
+
+1. **Stage 1 — XSS via poisoned card database.** `modules/services/cache.js` hardcoded `mia13165/updated_cards` as a card data source. A "default avatar" card in that repo contained a malicious `<img onload="...">` tag in its metadata field. `modules/templates/detailModal.js` injected `metadata` (and all other card text fields) directly into `innerHTML` with **zero sanitization** — a classic stored XSS.
+2. **Stage 2 — Delayed remote code execution.** The `onload` handler waited 15–25 minutes (to avoid DevTools scrutiny) then fetched and `eval()`-ed a loader script from `raw.githubusercontent.com/gm92342/sdhiabfkgcnf`.
+3. **Stage 3 — Lua VM credential harvester.** The loader spun up a Fengari (Lua 5.3) VM running a heavily obfuscated Lua payload that collected every API key, proxy password, connection profile, and reverse proxy credential from SillyTavern's `/api/secrets` and user backup ZIPs, then exfiltrated them to an ephemeral C2 server (`*.srv.us`). Multi-user ST instances had every user's keys stolen.
+
+**Your chats and character cards were not exfiltrated — only credentials.**
+
+Full technical breakdown: <https://rentry.co/st-backdoor>
+
+Original GitHub issue: <https://github.com/mia13165/SillyTavern-BotBrowser/issues/27>
+
+SillyTavern dev team statement (Discord — RossAscends, Rolpictogram, ST Dev):
+> *"If you ever used the Bot Browser extension, uninstall it and rotate ALL of your API keys ASAP … The exploited vulnerability was patched out of SillyTavern's 1.17.0 release on March 28th, 2026."*
+
+## What was patched in this fork
+
+Security audit and fixes performed on 2026-04-28 using [Claude Code](https://claude.ai/code) (claude-sonnet-4-6):
+
+| File | Fix |
+|------|-----|
+| `modules/templates/detailModal.js` | Added `escapeHTML()` to every card field injected into `innerHTML`: `metadata`, `cardName`, `cardCreator`, `creator`, `content` (description, websiteDesc, personality, scenario, firstMessage, exampleMsg), alternate greetings, lorebook entry names/keywords/content |
+| `modules/services/cache.js` | Replaced `mia13165/updated_cards` card database URL with `thijsi123/updated_cards` |
+| `modules/services/updateChecker.js` | Replaced `mia13165/SillyTavern-BotBrowser` repo reference with `thijsi123/SillyTavern-BotBrowser` |
+| `manifest.json` | Updated `author` and `homePage` from `mia13165` to `thijsi123` |
+
+The stages 2 & 3 payload (the `eval`, Lua VM, and C2 exfil) lived entirely in external attacker-controlled repos and was never present in this extension's source code. The only entry point was the XSS in stage 1, which is now closed.
+
+Thanks to the rentry author for the full technical write-up, and to the SillyTavern dev team for the fast disclosure.
+
+---
+
 # Bot Browser
 
 Browse bots, lorebooks, collections, trends, and your own local SillyTavern library from one place.
@@ -9,7 +47,7 @@ Browse bots, lorebooks, collections, trends, and your own local SillyTavern libr
 Install via the SillyTavern extension installer:
 
 ```
-https://github.com/mia13165/SillyTavern-BotBrowser
+https://github.com/thijsi123/SillyTavern-BotBrowser
 ```
 
 ## How to Update

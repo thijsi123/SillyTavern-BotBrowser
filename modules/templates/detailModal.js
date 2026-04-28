@@ -1,4 +1,4 @@
-import { sanitizeImageUrl } from '../utils/utils.js';
+import { sanitizeImageUrl, escapeHTML } from '../utils/utils.js';
 
 export function buildDetailModalHTML(cardName, imageUrl, isLorebook, cardCreator, tags, creator, websiteDesc, description, descPreview, personality, scenario, firstMessage, alternateGreetings, exampleMsg, entries, entriesCount, metadata, isBookmarked = false, isRandom = false, isImported = false, characterExistsInST = false, sourceUrlData = null, chubFeatures = null) {
     const safeImageUrl = sanitizeImageUrl(imageUrl);
@@ -30,7 +30,7 @@ export function buildDetailModalHTML(cardName, imageUrl, isLorebook, cardCreator
 
     return `
         <div class="bot-browser-detail-header">
-            <h2>${cardName}</h2>
+            <h2>${escapeHTML(cardName)}</h2>
             <div class="bot-browser-detail-header-actions">
                 ${viewOnWebsiteHTML}
                 <button class="bot-browser-detail-close">
@@ -95,8 +95,8 @@ function buildDetailSections(isLorebook, cardCreator, tags, creator, websiteDesc
                 <div class="bot-browser-detail-section">
                     <div class="bot-browser-detail-creator">
                         <i class="fa-solid fa-user-pen"></i>
-                        <button class="bot-browser-creator-link" data-creator="${creator}">
-                            ${cardCreator}
+                        <button class="bot-browser-creator-link" data-creator="${escapeHTML(creator)}">
+                            ${escapeHTML(cardCreator)}
                         </button>
                     </div>
                 </div>`;
@@ -207,7 +207,7 @@ function buildDetailSections(isLorebook, cardCreator, tags, creator, websiteDesc
                 <div class="bot-browser-detail-section">
                     <h4>Metadata</h4>
                     <div class="bot-browser-detail-metadata">
-                        ${metadata}
+                        ${escapeHTML(metadata)}
                     </div>
                 </div>`;
     }
@@ -218,13 +218,13 @@ function buildDetailSections(isLorebook, cardCreator, tags, creator, websiteDesc
 function buildCollapsibleSection(id, title, content) {
     return `
                 <div class="bot-browser-detail-section">
-                    <button class="bot-browser-collapse-toggle" data-target="${id}">
+                    <button class="bot-browser-collapse-toggle" data-target="${escapeHTML(id)}">
                         <i class="fa-solid fa-chevron-right"></i>
-                        <h4>${title}</h4>
+                        <h4>${escapeHTML(title)}</h4>
                     </button>
-                    <div class="bot-browser-collapse-content" id="${id}" style="display: none;">
+                    <div class="bot-browser-collapse-content" id="${escapeHTML(id)}" style="display: none;">
                         <div class="bot-browser-detail-text">
-                            ${content}
+                            ${escapeHTML(content)}
                         </div>
                     </div>
                 </div>`;
@@ -233,9 +233,9 @@ function buildCollapsibleSection(id, title, content) {
 function buildSection(title, content) {
     return `
                 <div class="bot-browser-detail-section">
-                    <h4>${title}</h4>
+                    <h4>${escapeHTML(title)}</h4>
                     <div class="bot-browser-detail-text">
-                        ${content}
+                        ${escapeHTML(content)}
                     </div>
                 </div>`;
 }
@@ -250,7 +250,7 @@ function buildAlternateGreetingsSection(alternateGreetings) {
                                 <i class="fa-solid fa-comment"></i> Greeting ${index + 1}
                             </div>
                             <div class="bot-browser-detail-text">
-                                ${greeting}
+                                ${escapeHTML(greeting)}
                             </div>
                         </div>
                     `).join('')}
@@ -263,15 +263,15 @@ function buildLorebookEntriesSection(entries, entriesCount) {
                     <h4>Lorebook Entries (${entriesCount}) (Preview)</h4>
                     ${entries.map(entry => `
                         <div class="bot-browser-detail-section" style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 5px;">
-                            <h5 style="margin: 0 0 5px 0;">${entry.name}</h5>
+                            <h5 style="margin: 0 0 5px 0;">${escapeHTML(entry.name)}</h5>
                             ${entry.keywords && entry.keywords.length > 0 ? `
                                 <div style="margin-bottom: 10px;">
                                     <strong style="font-size: 12px; color: rgba(255,255,255,0.6);">Keywords:</strong>
-                                    ${entry.keywords.map(kw => `<span style="display: inline-block; background: rgba(100,150,255,0.2); padding: 2px 6px; border-radius: 3px; margin: 2px; font-size: 11px;">${kw}</span>`).join('')}
+                                    ${entry.keywords.map(kw => `<span style="display: inline-block; background: rgba(100,150,255,0.2); padding: 2px 6px; border-radius: 3px; margin: 2px; font-size: 11px;">${escapeHTML(kw)}</span>`).join('')}
                                 </div>
                             ` : ''}
                             <div class="bot-browser-detail-text">
-                                ${entry.content}
+                                ${escapeHTML(entry.content)}
                             </div>
                         </div>
                     `).join('')}

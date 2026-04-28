@@ -1,7 +1,7 @@
 // Extension Update Checker
 // Checks GitHub for newer versions and shows a subtle notification
 
-const GITHUB_REPO = 'mia13165/SillyTavern-BotBrowser';
+const GITHUB_REPO = 'thijsi123/SillyTavern-BotBrowser';
 const MANIFEST_URLS = [
     `https://raw.githubusercontent.com/${GITHUB_REPO}/refs/heads/master/manifest.json`,
     `https://raw.githubusercontent.com/${GITHUB_REPO}/refs/heads/main/manifest.json`
